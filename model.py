@@ -1,5 +1,5 @@
 """
-Simple UNet architecture for CIFAR-10 (32x32 images, 10 classes)
+Simple UNet architecture for MNIST (28x28 grayscale images, 10 classes)
 Based on EDM architecture but simplified for educational purposes
 """
 import torch
@@ -91,8 +91,8 @@ class AttentionBlock(nn.Module):
 
 
 class SimpleUNet(nn.Module):
-    """Simple UNet for CIFAR-10"""
-    def __init__(self, img_channels=3, label_dim=10, time_emb_dim=128):
+    """Simple UNet for MNIST"""
+    def __init__(self, img_channels=1, label_dim=10, time_emb_dim=128):
         super().__init__()
         self.time_emb_dim = time_emb_dim
         self.time_embed = TimeEmbedding(time_emb_dim)

@@ -16,7 +16,7 @@ class GuidanceModel(nn.Module):
         super().__init__()
         
         # Real UNet (teacher) - frozen
-        self.real_unet = SimpleUNet(img_channels=3, label_dim=10)
+        self.real_unet = SimpleUNet(img_channels=1, label_dim=10)
         self.real_unet.requires_grad_(False)
         
         # Fake UNet (student) - trainable

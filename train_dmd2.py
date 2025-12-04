@@ -1,5 +1,5 @@
 """
-DMD2 Distillation Training Script
+DMD2 Distillation Training Script for MNIST
 Trains a fast feedforward model using DMD2 distillation
 """
 import torch
@@ -24,13 +24,13 @@ def train_dmd2(args):
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
     
-    # Load CIFAR-10 dataset
+    # Load MNIST dataset
     transform = transforms.Compose([
         transforms.ToTensor(),
-        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))  # Normalize to [-1, 1]
+        transforms.Normalize((0.5,), (0.5,))  # Normalize to [-1, 1]
     ])
     
-    train_dataset = datasets.CIFAR10(
+    train_dataset = datasets.MNIST(
         root=args.data_dir,
         train=True,
         download=True,
@@ -205,8 +205,8 @@ def train_dmd2(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train DMD2 model on CIFAR-10")
-    parser.add_argument("--data_dir", type=str, default="./data", help="Directory for CIFAR-10 data")
+    parser = argparse.ArgumentParser(description="Train DMD2 model on MNIST")
+    parser.add_argument("--data_dir", type=str, default="./data", help="Directory for MNIST data")
     parser.add_argument("--output_dir", type=str, default="./checkpoints/dmd2", help="Output directory for checkpoints")
     parser.add_argument("--teacher_checkpoint", type=str, required=True, help="Path to teacher checkpoint")
     parser.add_argument("--batch_size", type=int, default=128, help="Batch size")

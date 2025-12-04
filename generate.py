@@ -21,7 +21,7 @@ def generate_images(args):
     os.makedirs(args.output_dir, exist_ok=True)
     
     # Load model
-    model = SimpleUNet(img_channels=3, label_dim=10).to(device)
+    model = SimpleUNet(img_channels=1, label_dim=10).to(device)
     
     # Load checkpoint
     print(f"Loading checkpoint from {args.checkpoint}")
@@ -30,11 +30,8 @@ def generate_images(args):
     model.eval()
     print("Model loaded successfully")
     
-    # CIFAR-10 class names
-    class_names = [
-        'airplane', 'automobile', 'bird', 'cat', 'deer',
-        'dog', 'frog', 'horse', 'ship', 'truck'
-    ]
+    # MNIST class names (digits 0-9)
+    class_names = [str(i) for i in range(10)]
     
     # Generate images
     with torch.no_grad():
@@ -42,7 +39,7 @@ def generate_images(args):
             print(f"Generating images for class: {class_names[class_idx]}")
             
             # Create noise
-            noise = torch.randn(args.num_samples, 3, 32, 32, device=device)
+            noise = torch.randn(args.num_samples, 1, 28, 28, device=device)
             scaled_noise = noise * args.conditioning_sigma
             
             # Create labels

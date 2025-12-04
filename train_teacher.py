@@ -1,5 +1,5 @@
 """
-Initial training script to train a teacher diffusion model on CIFAR-10
+Initial training script to train a teacher diffusion model on MNIST
 This creates the checkpoint that will be used for DMD2 distillation
 """
 import torch
@@ -24,13 +24,13 @@ def train_teacher(args):
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
     
-    # Load CIFAR-10 dataset
+    # Load MNIST dataset
     transform = transforms.Compose([
         transforms.ToTensor(),
-        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))  # Normalize to [-1, 1]
+        transforms.Normalize((0.5,), (0.5,))  # Normalize to [-1, 1]
     ])
     
-    train_dataset = datasets.CIFAR10(
+    train_dataset = datasets.MNIST(
         root=args.data_dir,
         train=True,
         download=True,
@@ -46,7 +46,7 @@ def train_teacher(args):
     )
     
     # Initialize model
-    model = SimpleUNet(img_channels=3, label_dim=10).to(device)
+    model = SimpleUNet(img_channels=1, label_dim=10).to(device)
     
     # Optimizer
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
@@ -135,8 +135,8 @@ def train_teacher(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train teacher diffusion model on CIFAR-10")
-    parser.add_argument("--data_dir", type=str, default="./data", help="Directory for CIFAR-10 data")
+    parser = argparse.ArgumentParser(description="Train teacher diffusion model on MNIST")
+    parser.add_argument("--data_dir", type=str, default="./data", help="Directory for MNIST data")
     parser.add_argument("--output_dir", type=str, default="./checkpoints/teacher", help="Output directory for checkpoints")
     parser.add_argument("--batch_size", type=int, default=128, help="Batch size")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
