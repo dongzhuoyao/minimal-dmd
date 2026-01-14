@@ -1,5 +1,5 @@
-import argparse
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
+from types import SimpleNamespace
 
 
 def _load_yaml(path: str) -> Dict[str, Any]:
@@ -23,7 +23,7 @@ def _load_yaml(path: str) -> Dict[str, Any]:
 def _flatten_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     """
     Accept either:
-      - flat keys matching argparse dests (e.g., lr, batch_size, wandb_project)
+      - flat keys matching config attributes (e.g., lr, batch_size, wandb_project)
       - a nested `wandb:` mapping with nicer names.
     """
     out: Dict[str, Any] = dict(cfg)
@@ -62,7 +62,7 @@ def _flatten_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
         if "enabled" not in wandb_cfg and saw_any_wandb_setting:
             out["wandb"] = True
 
-        # Remove the nested block to avoid "unknown key" warnings later.
+        # Remove the nested block to avoid confusion.
         out.pop("wandb", None)
 
     # YAML-only W&B (flat style): if any wandb_* key is present but `wandb` itself
@@ -87,41 +87,60 @@ def _flatten_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-def apply_yaml_config_to_parser(parser: argparse.ArgumentParser, config_path: Optional[str]) -> None:
-    if not config_path:
-        return
-
-    cfg = _flatten_config(_load_yaml(config_path))
-
-    allowed_dests = {a.dest for a in parser._actions}
-    to_set: Dict[str, Any] = {}
-    unknown: Dict[str, Any] = {}
-
-    for k, v in cfg.items():
-        if k in allowed_dests:
-            to_set[k] = v
-        else:
-            unknown[k] = v
-
-    if unknown:
-        # Keep it simple: warn once, but don't crash (useful for sharing configs across scripts).
-        unknown_keys = ", ".join(sorted(unknown.keys()))
-        print(f"[config] Warning: ignoring unknown keys: {unknown_keys}")
-
-    if to_set:
-        parser.set_defaults(**to_set)
-
-
-def parse_args_with_optional_yaml(
-    parser: argparse.ArgumentParser, argv: Optional[List[str]] = None
-) -> argparse.Namespace:
-    # Pre-parse only --config so we can load defaults before validating required args.
-    pre = argparse.ArgumentParser(add_help=False)
-    pre.add_argument("--config", type=str, default=None)
-    pre_args, _ = pre.parse_known_args(argv)
-
-    apply_yaml_config_to_parser(parser, pre_args.config)
-
-    # Parse full args now (CLI flags override YAML defaults).
-    return parser.parse_args(argv)
-
+def load_config(config_path: str) -> SimpleNamespace:
+    """
+    Load YAML config file and return a config object with defaults.
+    
+    Args:
+        config_path: Path to YAML config file
+        
+    Returns:
+        SimpleNamespace object with all config values
+    """
+    # Default values
+    defaults = {
+        "data_dir": "./data",
+        "output_dir": "./log/checkpoints/dmd2",
+        "teacher_checkpoint": None,
+        "batch_size": 128,
+        "generator_lr": 2e-6,
+        "guidance_lr": 2e-6,
+        "step_number": 100_000,
+        "num_train_timesteps": 1000,
+        "sigma_min": 0.002,
+        "sigma_max": 80.0,
+        "sigma_data": 0.5,
+        "rho": 7.0,
+        "min_step_percent": 0.02,
+        "max_step_percent": 0.98,
+        "conditioning_sigma": 80.0,
+        "dfake_gen_update_ratio": 10,
+        "dm_loss_weight": 1.0,
+        "max_grad_norm": 1.0,
+        "save_every": 5000,
+        "wandb": False,
+        "wandb_project": "minimal-dmd",
+        "wandb_entity": None,
+        "wandb_run_name": None,
+        "wandb_mode": "online",
+        "wandb_tags": None,
+        "wandb_dir": "./log/wandb",
+        "wandb_log_every": 50,
+        "wandb_watch": False,
+        "wandb_log_images": False,
+        "wandb_num_log_images": 32,
+        "wandb_log_checkpoints": False,
+        "wandb_log_samples": False,
+        "wandb_sample_every": 1000,
+        "wandb_sample_num_images": 64,
+        "resume_from_checkpoint": None,
+    }
+    
+    # Load YAML config
+    yaml_cfg = _flatten_config(_load_yaml(config_path))
+    
+    # Merge defaults with YAML config (YAML overrides defaults)
+    config_dict = {**defaults, **yaml_cfg}
+    
+    # Convert to SimpleNamespace for attribute access
+    return SimpleNamespace(**config_dict)

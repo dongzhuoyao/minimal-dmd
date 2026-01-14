@@ -9,12 +9,10 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from torchvision.utils import make_grid
 from tqdm import tqdm
-import argparse
 import os
-try:
-    from .config_utils import parse_args_with_optional_yaml
-except ImportError:
-    from config_utils import parse_args_with_optional_yaml
+import hydra
+from hydra.utils import get_original_cwd
+from omegaconf import DictConfig, OmegaConf
 try:
     from .unified_model import UnifiedModel
 except ImportError:
@@ -57,13 +55,16 @@ def _sample_dmd2_grid(
     return grid
 
 
-def train_dmd2(args):
+def train_dmd2(cfg: DictConfig):
     """Train DMD2 model"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
-    # Create output directory
-    os.makedirs(args.output_dir, exist_ok=True)
+    # Hydra changes working directory to the experiment output directory
+    # Use relative paths that will be created in the Hydra output directory
+    output_dir = cfg.output_dir
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"Output directory: {os.path.abspath(output_dir)}")
 
     # Optional: Weights & Biases logging
     wandb_run = None
@@ -74,7 +75,7 @@ def train_dmd2(args):
         import wandb  # type: ignore
         wandb.log(metrics, step=step)
     
-    if args.wandb:
+    if cfg.wandb.enabled:
         try:
             import wandb  # type: ignore
         except Exception as e:
@@ -84,18 +85,20 @@ def train_dmd2(args):
             ) from e
 
         print(
-            f"[wandb] enabled: project={args.wandb_project} mode={args.wandb_mode} "
-            f"run_name={args.wandb_run_name} entity={args.wandb_entity}"
+            f"[wandb] enabled: project={cfg.wandb.project} mode={cfg.wandb.mode} "
+            f"run_name={cfg.wandb.run_name} entity={cfg.wandb.entity}"
         )
-        os.makedirs(args.wandb_dir, exist_ok=True)
+        wandb_dir = cfg.wandb.dir
+        os.makedirs(wandb_dir, exist_ok=True)
+        print(f"W&B directory: {os.path.abspath(wandb_dir)}")
         wandb_run = wandb.init(
-            project=args.wandb_project,
-            entity=args.wandb_entity,
-            name=args.wandb_run_name,
-            tags=args.wandb_tags,
-            mode=args.wandb_mode,
-            dir=args.wandb_dir,
-            config=vars(args),
+            project=cfg.wandb.project,
+            entity=cfg.wandb.entity,
+            name=cfg.wandb.run_name,
+            tags=cfg.wandb.tags if cfg.wandb.tags is not None else None,
+            mode=cfg.wandb.mode,
+            dir=wandb_dir,
+            config=OmegaConf.to_container(cfg, resolve=True),
         )
     
     # Load MNIST dataset
@@ -104,8 +107,12 @@ def train_dmd2(args):
         transforms.Normalize((0.5,), (0.5,))  # Normalize to [-1, 1]
     ])
     
+    # data_dir is relative to original working directory
+    original_cwd = get_original_cwd()
+    data_dir = os.path.join(original_cwd, cfg.data_dir) if not os.path.isabs(cfg.data_dir) else cfg.data_dir
+    
     train_dataset = datasets.MNIST(
-        root=args.data_dir,
+        root=data_dir,
         train=True,
         download=True,
         transform=transform
@@ -113,7 +120,7 @@ def train_dmd2(args):
     
     train_loader = DataLoader(
         train_dataset,
-        batch_size=args.batch_size,
+        batch_size=cfg.batch_size,
         shuffle=True,
         num_workers=4,
         pin_memory=True
@@ -121,14 +128,14 @@ def train_dmd2(args):
     
     # Initialize unified model
     model = UnifiedModel(
-        num_train_timesteps=args.num_train_timesteps,
-        sigma_min=args.sigma_min,
-        sigma_max=args.sigma_max,
-        sigma_data=args.sigma_data,
-        rho=args.rho,
-        min_step_percent=args.min_step_percent,
-        max_step_percent=args.max_step_percent,
-        conditioning_sigma=args.conditioning_sigma
+        num_train_timesteps=cfg.num_train_timesteps,
+        sigma_min=cfg.sigma_min,
+        sigma_max=cfg.sigma_max,
+        sigma_data=cfg.sigma_data,
+        rho=cfg.rho,
+        min_step_percent=cfg.min_step_percent,
+        max_step_percent=cfg.max_step_percent,
+        conditioning_sigma=cfg.conditioning_sigma
     ).to(device)
 
     def _count_params(m: nn.Module) -> tuple[int, int]:
@@ -166,17 +173,20 @@ def train_dmd2(args):
         )
     
     # Load teacher checkpoint into real_unet (required)
-    if not args.teacher_checkpoint:
-        raise ValueError("--teacher_checkpoint is required (set it via CLI or YAML config).")
+    if not cfg.teacher_checkpoint:
+        raise ValueError("teacher_checkpoint is required (set it in config file).")
     
-    if not os.path.exists(args.teacher_checkpoint):
+    # teacher_checkpoint is relative to original working directory
+    teacher_checkpoint_path = os.path.join(original_cwd, cfg.teacher_checkpoint) if not os.path.isabs(cfg.teacher_checkpoint) else cfg.teacher_checkpoint
+    
+    if not os.path.exists(teacher_checkpoint_path):
         raise FileNotFoundError(
-            f"Teacher checkpoint not found: {args.teacher_checkpoint}\n"
+            f"Teacher checkpoint not found: {teacher_checkpoint_path}\n"
             f"Please train a teacher model first using train_teacher.py"
         )
     
-    print(f"Loading teacher checkpoint from {args.teacher_checkpoint}")
-    teacher_checkpoint = torch.load(args.teacher_checkpoint, map_location=device)
+    print(f"Loading teacher checkpoint from {teacher_checkpoint_path}")
+    teacher_checkpoint = torch.load(teacher_checkpoint_path, map_location=device)
     
     # Load teacher model weights into real_unet (frozen teacher)
     if 'model_state_dict' in teacher_checkpoint:
@@ -196,13 +206,13 @@ def train_dmd2(args):
     # Optimizers
     optimizer_generator = optim.AdamW(
         model.feedforward_model.parameters(),
-        lr=args.generator_lr,
+        lr=cfg.generator_lr,
         weight_decay=0.01
     )
     
     optimizer_guidance = optim.AdamW(
         model.guidance_model.fake_unet.parameters(),
-        lr=args.guidance_lr,
+        lr=cfg.guidance_lr,
         weight_decay=0.01
     )
     
@@ -214,12 +224,15 @@ def train_dmd2(args):
     global_step = 0
     
     # Checkpoint resuming support
-    if args.resume_from_checkpoint:
-        if not os.path.exists(args.resume_from_checkpoint):
-            raise FileNotFoundError(f"Resume checkpoint not found: {args.resume_from_checkpoint}")
+    if cfg.resume_from_checkpoint:
+        # resume_from_checkpoint can be relative to original working directory or absolute path
+        resume_checkpoint_path = os.path.join(original_cwd, cfg.resume_from_checkpoint) if not os.path.isabs(cfg.resume_from_checkpoint) else cfg.resume_from_checkpoint
         
-        print(f"Resuming training from checkpoint: {args.resume_from_checkpoint}")
-        resume_checkpoint = torch.load(args.resume_from_checkpoint, map_location=device)
+        if not os.path.exists(resume_checkpoint_path):
+            raise FileNotFoundError(f"Resume checkpoint not found: {resume_checkpoint_path}")
+        
+        print(f"Resuming training from checkpoint: {resume_checkpoint_path}")
+        resume_checkpoint = torch.load(resume_checkpoint_path, map_location=device)
         
         # Load model states
         if 'feedforward_model_state_dict' in resume_checkpoint:
@@ -246,31 +259,31 @@ def train_dmd2(args):
         
         print("Resume complete!")
     
-    if args.step_number <= 0:
-        raise ValueError("--step_number must be > 0 (epoch-based training has been removed).")
+    if cfg.step_number <= 0:
+        raise ValueError("step_number must be > 0 (epoch-based training has been removed).")
 
     data_iter = iter(train_loader)
     running_dm_sum = 0.0
     running_fake_sum = 0.0
-    pbar = tqdm(total=args.step_number, desc="Training", initial=global_step)
+    pbar = tqdm(total=cfg.step_number, desc="Training", initial=global_step)
     try:
-        if wandb_run is not None and args.wandb_watch:
+        if wandb_run is not None and cfg.wandb.watch:
             import wandb  # type: ignore
-            wandb.watch(model, log="all", log_freq=args.wandb_log_every)
+            wandb.watch(model, log="all", log_freq=cfg.wandb.log_every)
 
         # Log a quick "what does training data look like" grid once
-        if wandb_run is not None and args.wandb_log_images:
+        if wandb_run is not None and cfg.wandb.log_images:
             try:
                 images0, _labels0 = next(iter(train_loader))
                 # images are in [-1, 1]; map to [0, 1] for visualization
-                vis = (images0[: args.wandb_num_log_images].detach().cpu() + 1.0) / 2.0
+                vis = (images0[: cfg.wandb.num_log_images].detach().cpu() + 1.0) / 2.0
                 grid = make_grid(vis, nrow=min(8, vis.shape[0]))
                 import wandb  # type: ignore
                 _log_wandb({"train/examples": wandb.Image(grid)}, step=0)
             except Exception as e:
                 print(f"[wandb] failed to log train/examples: {e}")
 
-        while global_step < args.step_number:
+        while global_step < cfg.step_number:
             try:
                 images, labels = next(data_iter)
             except StopIteration:
@@ -285,12 +298,12 @@ def train_dmd2(args):
             labels_onehot = eye_matrix[labels]
 
             # Determine if we should compute generator gradient
-            COMPUTE_GENERATOR_GRADIENT = (global_step % args.dfake_gen_update_ratio == 0)
+            COMPUTE_GENERATOR_GRADIENT = (global_step % cfg.dfake_gen_update_ratio == 0)
 
             # ========== Generator Turn ==========
             # Generate scaled noise
-            scaled_noise = torch.randn_like(images) * args.conditioning_sigma
-            timestep_sigma = torch.ones(images.shape[0], device=device) * args.conditioning_sigma
+            scaled_noise = torch.randn_like(images) * cfg.conditioning_sigma
+            timestep_sigma = torch.ones(images.shape[0], device=device) * cfg.conditioning_sigma
 
             # Random labels for generation
             gen_labels = torch.randint(0, 10, (images.shape[0],), device=device)
@@ -318,13 +331,13 @@ def train_dmd2(args):
 
             # Update generator if needed
             if COMPUTE_GENERATOR_GRADIENT:
-                generator_loss = generator_loss_dict["loss_dm"] * args.dm_loss_weight
+                generator_loss = generator_loss_dict["loss_dm"] * cfg.dm_loss_weight
 
                 optimizer_generator.zero_grad()
                 generator_loss.backward()
                 gen_grad_norm = torch.nn.utils.clip_grad_norm_(
                     model.feedforward_model.parameters(),
-                    args.max_grad_norm
+                    cfg.max_grad_norm
                 )
                 optimizer_generator.step()
                 optimizer_generator.zero_grad()
@@ -348,7 +361,7 @@ def train_dmd2(args):
             guidance_loss.backward()
             fake_grad_norm = torch.nn.utils.clip_grad_norm_(
                 model.guidance_model.fake_unet.parameters(),
-                args.max_grad_norm
+                cfg.max_grad_norm
             )
             optimizer_guidance.step()
             optimizer_guidance.zero_grad()
@@ -361,13 +374,13 @@ def train_dmd2(args):
             if COMPUTE_GENERATOR_GRADIENT and generator_loss is not None:
                 running_dm_sum += float(generator_loss.item())
             running_fake_sum += float(guidance_loss.item())
-            avg_dm = running_dm_sum / max(1, global_step // args.dfake_gen_update_ratio)
+            avg_dm = running_dm_sum / max(1, global_step // cfg.dfake_gen_update_ratio)
             avg_fake = running_fake_sum / max(1, global_step)
             pbar.update(1)
             pbar.set_postfix({"loss_dm": avg_dm, "loss_fake": avg_fake})
 
             # W&B scalar logging
-            if wandb_run is not None and (global_step % args.wandb_log_every == 0):
+            if wandb_run is not None and (global_step % cfg.wandb.log_every == 0):
                 metrics = {
                     "train/loss_fake": float(guidance_loss.item()),
                     "train/avg_loss_fake": float(avg_fake),
@@ -389,15 +402,15 @@ def train_dmd2(args):
             # Periodically sample from the current distilled generator and log an image grid
             if (
                 wandb_run is not None
-                and args.wandb_log_samples
-                and (global_step % args.wandb_sample_every == 0)
+                and cfg.wandb.log_samples
+                and (global_step % cfg.wandb.sample_every == 0)
             ):
                 try:
                     grid = _sample_dmd2_grid(
                         model.feedforward_model,
                         device,
-                        num_images=args.wandb_sample_num_images,
-                        conditioning_sigma=args.conditioning_sigma,
+                        num_images=cfg.wandb.sample_num_images,
+                        conditioning_sigma=cfg.conditioning_sigma,
                     )
                     import wandb  # type: ignore
                     _log_wandb({"samples/dmd2": wandb.Image(grid)}, step=global_step)
@@ -405,9 +418,9 @@ def train_dmd2(args):
                     print(f"[wandb] sample logging failed at step {global_step}: {e}")
 
             # Save checkpoint periodically
-            if global_step % args.save_every == 0:
+            if global_step % cfg.save_every == 0:
                 checkpoint_path = os.path.join(
-                    args.output_dir,
+                    output_dir,
                     f"dmd2_checkpoint_step_{global_step}.pt"
                 )
                 torch.save({
@@ -419,7 +432,7 @@ def train_dmd2(args):
                 }, checkpoint_path)
                 print(f"\nSaved checkpoint to {checkpoint_path}")
 
-                if wandb_run is not None and args.wandb_log_checkpoints:
+                if wandb_run is not None and cfg.wandb.log_checkpoints:
                     import wandb  # type: ignore
                     artifact = wandb.Artifact(
                         name=f"dmd2-checkpoint-step-{global_step}",
@@ -433,7 +446,7 @@ def train_dmd2(args):
             wandb_run.finish()
     
     # Save final checkpoint
-    final_checkpoint_path = os.path.join(args.output_dir, "dmd2_final.pt")
+    final_checkpoint_path = os.path.join(output_dir, "dmd2_final.pt")
     torch.save({
         'feedforward_model_state_dict': model.feedforward_model.state_dict(),
         'guidance_fake_unet_state_dict': model.guidance_model.fake_unet.state_dict(),
@@ -444,49 +457,11 @@ def train_dmd2(args):
     print(f"\nSaved final checkpoint to {final_checkpoint_path}")
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train DMD2 model on MNIST")
-    parser.add_argument("--config", type=str, default=None, help="Path to YAML config file (optional). CLI flags override YAML.")
-    parser.add_argument("--data_dir", type=str, default="./data", help="Directory for MNIST data")
-    parser.add_argument("--output_dir", type=str, default="./log/checkpoints/dmd2", help="Output directory for checkpoints")
-    parser.add_argument("--teacher_checkpoint", type=str, default=None, help="Path to teacher checkpoint (required; can be set via YAML)")
-    parser.add_argument("--batch_size", type=int, default=128, help="Batch size")
-    parser.add_argument("--generator_lr", type=float, default=2e-6, help="Generator learning rate")
-    parser.add_argument("--guidance_lr", type=float, default=2e-6, help="Guidance learning rate")
-    parser.add_argument("--step_number", type=int, default=100_000, help="Total training steps to run (default: 100k)")
-    parser.add_argument("--num_train_timesteps", type=int, default=1000, help="Number of diffusion timesteps")
-    parser.add_argument("--sigma_min", type=float, default=0.002, help="Minimum sigma")
-    parser.add_argument("--sigma_max", type=float, default=80.0, help="Maximum sigma")
-    parser.add_argument("--sigma_data", type=float, default=0.5, help="Data sigma")
-    parser.add_argument("--rho", type=float, default=7.0, help="Rho parameter for Karras schedule")
-    parser.add_argument("--min_step_percent", type=float, default=0.02, help="Minimum step percent for DM loss")
-    parser.add_argument("--max_step_percent", type=float, default=0.98, help="Maximum step percent for DM loss")
-    parser.add_argument("--conditioning_sigma", type=float, default=80.0, help="Conditioning sigma for generation")
-    parser.add_argument("--dfake_gen_update_ratio", type=int, default=10, help="Update generator every N steps")
-    parser.add_argument("--dm_loss_weight", type=float, default=1.0, help="Weight for distribution matching loss")
-    parser.add_argument("--max_grad_norm", type=float, default=1.0, help="Maximum gradient norm")
-    parser.add_argument("--save_every", type=int, default=5000, help="Save checkpoint every N steps")
+@hydra.main(version_base=None, config_path="configs", config_name="config")
+def main(cfg: DictConfig) -> None:
+    train_dmd2(cfg)
 
-    # Weights & Biases (optional)
-    parser.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging")
-    parser.add_argument("--wandb_project", type=str, default="minimal-dmd", help="W&B project name")
-    parser.add_argument("--wandb_entity", type=str, default=None, help="W&B entity (team/user); optional")
-    parser.add_argument("--wandb_run_name", type=str, default=None, help="W&B run name; optional")
-    parser.add_argument("--wandb_mode", type=str, default="online", choices=["online", "offline", "disabled"], help="W&B mode")
-    parser.add_argument("--wandb_tags", nargs="*", default=None, help="W&B tags (space-separated)")
-    parser.add_argument("--wandb_dir", type=str, default="./log/wandb", help="Directory to store W&B run files")
-    parser.add_argument("--wandb_log_every", type=int, default=50, help="Log scalars every N steps")
-    parser.add_argument("--wandb_watch", action="store_true", help="Enable wandb.watch(model)")
-    parser.add_argument("--wandb_log_images", action="store_true", help="Log a small training image grid once at start")
-    parser.add_argument("--wandb_num_log_images", type=int, default=32, help="Number of images to include in logged grid")
-    parser.add_argument("--wandb_log_checkpoints", action="store_true", help="Log checkpoints as W&B artifacts when saved")
-    parser.add_argument("--wandb_log_samples", action="store_true", help="Log sampled images during training")
-    parser.add_argument("--wandb_sample_every", type=int, default=1000, help="Sample/log images every N steps")
-    parser.add_argument("--wandb_sample_num_images", type=int, default=64, help="Number of sampled images per logged grid")
-    
-    # Checkpoint resuming
-    parser.add_argument("--resume_from_checkpoint", type=str, default=None, help="Path to DMD2 checkpoint to resume from (optional)")
-    
-    args = parse_args_with_optional_yaml(parser)
-    train_dmd2(args)
+
+if __name__ == "__main__":
+    main()
 

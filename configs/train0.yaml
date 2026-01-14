@@ -1,0 +1,41 @@
+# @package _global_
+
+# Data and I/O
+# Note: data_dir is relative to original working directory
+# output_dir and wandb.dir are relative to Hydra experiment output directory
+data_dir: ./data
+output_dir: checkpoints  # Will be created in Hydra output directory
+
+# Training hyperparameters
+batch_size: 128
+lr: 1.0e-4
+step_number: 100000
+max_grad_norm: 1.0
+save_every: 5000
+
+# Model hyperparameters
+num_train_timesteps: 1000
+sigma_min: 0.002
+sigma_max: 80.0
+sigma_data: 0.5
+rho: 7.0
+
+# Weights & Biases configuration
+wandb:
+  enabled: true
+  project: minimal-dmd
+  entity: null
+  run_name: teacher-train0
+  mode: online
+  tags: ["teacher", "mnist", "train0"]
+  dir: wandb  # Will be created in Hydra output directory
+  log_every: 50
+  watch: false
+  log_images: true
+  num_log_images: 32
+  log_checkpoints: true
+  log_samples: true
+  sample_every: 1000
+  sample_num_images: 64
+  sample_steps: 20
+  sample_conditioning_sigma: 80.0
