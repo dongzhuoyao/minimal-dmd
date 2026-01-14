@@ -37,19 +37,52 @@ def _flatten_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
             "run_name": "wandb_run_name",
             "mode": "wandb_mode",
             "tags": "wandb_tags",
+            "dir": "wandb_dir",
             "log_every": "wandb_log_every",
             "watch": "wandb_watch",
             "log_images": "wandb_log_images",
             "num_log_images": "wandb_num_log_images",
             "log_checkpoints": "wandb_log_checkpoints",
+            "log_samples": "wandb_log_samples",
+            "sample_every": "wandb_sample_every",
+            "sample_num_images": "wandb_sample_num_images",
+            "sample_steps": "wandb_sample_steps",
+            "sample_conditioning_sigma": "wandb_sample_conditioning_sigma",
         }
+        saw_any_wandb_setting = False
         for k, v in wandb_cfg.items():
             dest = mapping.get(k)
             if dest is not None:
                 out[dest] = v
+                if k != "enabled":
+                    saw_any_wandb_setting = True
+
+        # YAML-only W&B: if you provide a `wandb:` block but omit `enabled`,
+        # assume you intended to enable W&B.
+        if "enabled" not in wandb_cfg and saw_any_wandb_setting:
+            out["wandb"] = True
 
         # Remove the nested block to avoid "unknown key" warnings later.
         out.pop("wandb", None)
+
+    # YAML-only W&B (flat style): if any wandb_* key is present but `wandb` itself
+    # isn't, assume intent is to enable W&B.
+    if "wandb" not in out:
+        for k in (
+            "wandb_project",
+            "wandb_entity",
+            "wandb_run_name",
+            "wandb_mode",
+            "wandb_tags",
+            "wandb_log_every",
+            "wandb_watch",
+            "wandb_log_images",
+            "wandb_num_log_images",
+            "wandb_log_checkpoints",
+        ):
+            if k in out:
+                out["wandb"] = True
+                break
 
     return out
 

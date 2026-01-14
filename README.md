@@ -60,16 +60,31 @@ pip install wandb
 wandb login
 ```
 
-Then run with:
+Then either enable it in YAML (recommended), or via CLI.
+
+**YAML-only (recommended)**: in your `--config` file add:
+
+```yaml
+wandb:
+  enabled: true
+  project: minimal-dmd
+  run_name: teacher-mnist
+  mode: online   # online|offline|disabled
+```
+
+**CLI**:
 
 ```bash
 python train_teacher.py \
     --wandb \
     --wandb_project minimal-dmd \
     --wandb_run_name teacher-mnist \
+    --wandb_dir ./log/wandb \
     --step_number 100000 \
     --wandb_log_every 50 \
     --wandb_log_images \
+    --wandb_log_samples \
+    --wandb_sample_every 1000 \
     --wandb_log_checkpoints
 ```
 
@@ -85,7 +100,7 @@ python train_dmd2.py \
     --batch_size 128 \
     --generator_lr 2e-6 \
     --guidance_lr 2e-6 \
-    --num_epochs 50 \
+    --step_number 100000 \
     --dfake_gen_update_ratio 10 \
     --save_every 5000
 ```

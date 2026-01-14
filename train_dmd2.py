@@ -106,103 +106,103 @@ def train_dmd2(args):
         
         images = images.to(device)
         labels = labels.to(device)
-            
-            # Convert labels to one-hot
-            labels_onehot = eye_matrix[labels]
-            
-            # Determine if we should compute generator gradient
-            COMPUTE_GENERATOR_GRADIENT = (global_step % args.dfake_gen_update_ratio == 0)
-            
-            # ========== Generator Turn ==========
-            # Generate scaled noise
-            scaled_noise = torch.randn_like(images) * args.conditioning_sigma
-            timestep_sigma = torch.ones(images.shape[0], device=device) * args.conditioning_sigma
-            
-            # Random labels for generation
-            gen_labels = torch.randint(0, 10, (images.shape[0],), device=device)
-            gen_labels_onehot = eye_matrix[gen_labels]
-            
-            # Real training dict (for optional GAN loss)
-            real_train_dict = {
-                "real_image": images,
-                "real_label": labels_onehot
-            }
-            
-            # Forward pass through generator
-            generator_loss_dict, generator_log_dict = model(
-                scaled_noise=scaled_noise,
-                timestep_sigma=timestep_sigma,
-                labels=gen_labels_onehot,
-                real_train_dict=real_train_dict if COMPUTE_GENERATOR_GRADIENT else None,
-                compute_generator_gradient=COMPUTE_GENERATOR_GRADIENT,
-                generator_turn=True,
-                guidance_turn=False
-            )
-            
-            # Update generator if needed
-            if COMPUTE_GENERATOR_GRADIENT:
-                generator_loss = generator_loss_dict["loss_dm"] * args.dm_loss_weight
-                
-                optimizer_generator.zero_grad()
-                generator_loss.backward()
-                torch.nn.utils.clip_grad_norm_(
-                    model.feedforward_model.parameters(),
-                    args.max_grad_norm
-                )
-                optimizer_generator.step()
-                optimizer_generator.zero_grad()
-                optimizer_guidance.zero_grad()
-            
-            # ========== Guidance Turn ==========
-            # Update guidance model (fake_unet)
-            guidance_loss_dict, guidance_log_dict = model(
-                scaled_noisy_image=None,  # Not used in guidance turn
-                timestep_sigma=None,  # Not used in guidance turn
-                labels=None,  # Not used in guidance turn
-                compute_generator_gradient=False,
-                generator_turn=False,
-                guidance_turn=True,
-                guidance_data_dict=generator_log_dict['guidance_data_dict']
-            )
-            
-            guidance_loss = guidance_loss_dict["loss_fake_mean"]
-            
-            optimizer_guidance.zero_grad()
-            guidance_loss.backward()
+
+        # Convert labels to one-hot
+        labels_onehot = eye_matrix[labels]
+
+        # Determine if we should compute generator gradient
+        COMPUTE_GENERATOR_GRADIENT = (global_step % args.dfake_gen_update_ratio == 0)
+
+        # ========== Generator Turn ==========
+        # Generate scaled noise
+        scaled_noise = torch.randn_like(images) * args.conditioning_sigma
+        timestep_sigma = torch.ones(images.shape[0], device=device) * args.conditioning_sigma
+
+        # Random labels for generation
+        gen_labels = torch.randint(0, 10, (images.shape[0],), device=device)
+        gen_labels_onehot = eye_matrix[gen_labels]
+
+        # Real training dict (for optional GAN loss)
+        real_train_dict = {
+            "real_image": images,
+            "real_label": labels_onehot
+        }
+
+        # Forward pass through generator
+        generator_loss_dict, generator_log_dict = model(
+            scaled_noise=scaled_noise,
+            timestep_sigma=timestep_sigma,
+            labels=gen_labels_onehot,
+            real_train_dict=real_train_dict if COMPUTE_GENERATOR_GRADIENT else None,
+            compute_generator_gradient=COMPUTE_GENERATOR_GRADIENT,
+            generator_turn=True,
+            guidance_turn=False
+        )
+
+        # Update generator if needed
+        if COMPUTE_GENERATOR_GRADIENT:
+            generator_loss = generator_loss_dict["loss_dm"] * args.dm_loss_weight
+
+            optimizer_generator.zero_grad()
+            generator_loss.backward()
             torch.nn.utils.clip_grad_norm_(
-                model.guidance_model.fake_unet.parameters(),
+                model.feedforward_model.parameters(),
                 args.max_grad_norm
             )
-            optimizer_guidance.step()
-            optimizer_guidance.zero_grad()
+            optimizer_generator.step()
             optimizer_generator.zero_grad()
-            
-            global_step += 1
-            
-            # Update progress bar
-            # (these are running averages over all steps so far)
-            if COMPUTE_GENERATOR_GRADIENT:
-                running_dm_sum += generator_loss.item()
-            running_fake_sum += guidance_loss.item()
-            avg_dm = running_dm_sum / max(1, global_step // args.dfake_gen_update_ratio)
-            avg_fake = running_fake_sum / max(1, global_step)
-            pbar.update(1)
-            pbar.set_postfix({"loss_dm": avg_dm, "loss_fake": avg_fake})
-            
-            # Save checkpoint periodically
-            if global_step % args.save_every == 0:
-                checkpoint_path = os.path.join(
-                    args.output_dir,
-                    f"dmd2_checkpoint_step_{global_step}.pt"
-                )
-                torch.save({
-                    'feedforward_model_state_dict': model.feedforward_model.state_dict(),
-                    'guidance_fake_unet_state_dict': model.guidance_model.fake_unet.state_dict(),
-                    'optimizer_generator_state_dict': optimizer_generator.state_dict(),
-                    'optimizer_guidance_state_dict': optimizer_guidance.state_dict(),
-                    'step': global_step,
-                }, checkpoint_path)
-                print(f"\nSaved checkpoint to {checkpoint_path}")
+            optimizer_guidance.zero_grad()
+
+        # ========== Guidance Turn ==========
+        # Update guidance model (fake_unet)
+        guidance_loss_dict, guidance_log_dict = model(
+            scaled_noisy_image=None,  # Not used in guidance turn
+            timestep_sigma=None,  # Not used in guidance turn
+            labels=None,  # Not used in guidance turn
+            compute_generator_gradient=False,
+            generator_turn=False,
+            guidance_turn=True,
+            guidance_data_dict=generator_log_dict['guidance_data_dict']
+        )
+
+        guidance_loss = guidance_loss_dict["loss_fake_mean"]
+
+        optimizer_guidance.zero_grad()
+        guidance_loss.backward()
+        torch.nn.utils.clip_grad_norm_(
+            model.guidance_model.fake_unet.parameters(),
+            args.max_grad_norm
+        )
+        optimizer_guidance.step()
+        optimizer_guidance.zero_grad()
+        optimizer_generator.zero_grad()
+
+        global_step += 1
+
+        # Update progress bar
+        # (these are running averages over all steps so far)
+        if COMPUTE_GENERATOR_GRADIENT:
+            running_dm_sum += generator_loss.item()
+        running_fake_sum += guidance_loss.item()
+        avg_dm = running_dm_sum / max(1, global_step // args.dfake_gen_update_ratio)
+        avg_fake = running_fake_sum / max(1, global_step)
+        pbar.update(1)
+        pbar.set_postfix({"loss_dm": avg_dm, "loss_fake": avg_fake})
+
+        # Save checkpoint periodically
+        if global_step % args.save_every == 0:
+            checkpoint_path = os.path.join(
+                args.output_dir,
+                f"dmd2_checkpoint_step_{global_step}.pt"
+            )
+            torch.save({
+                'feedforward_model_state_dict': model.feedforward_model.state_dict(),
+                'guidance_fake_unet_state_dict': model.guidance_model.fake_unet.state_dict(),
+                'optimizer_generator_state_dict': optimizer_generator.state_dict(),
+                'optimizer_guidance_state_dict': optimizer_guidance.state_dict(),
+                'step': global_step,
+            }, checkpoint_path)
+            print(f"\nSaved checkpoint to {checkpoint_path}")
     
     # Save final checkpoint
     final_checkpoint_path = os.path.join(args.output_dir, "dmd2_final.pt")
@@ -220,7 +220,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train DMD2 model on MNIST")
     parser.add_argument("--config", type=str, default=None, help="Path to YAML config file (optional). CLI flags override YAML.")
     parser.add_argument("--data_dir", type=str, default="./data", help="Directory for MNIST data")
-    parser.add_argument("--output_dir", type=str, default="./checkpoints/dmd2", help="Output directory for checkpoints")
+    parser.add_argument("--output_dir", type=str, default="./log/checkpoints/dmd2", help="Output directory for checkpoints")
     parser.add_argument("--teacher_checkpoint", type=str, default=None, help="Path to teacher checkpoint (required; can be set via YAML)")
     parser.add_argument("--batch_size", type=int, default=128, help="Batch size")
     parser.add_argument("--generator_lr", type=float, default=2e-6, help="Generator learning rate")
