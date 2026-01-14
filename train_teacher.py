@@ -99,6 +99,13 @@ def train_teacher(args):
 
     # Optional: Weights & Biases logging
     wandb_run = None
+    
+    def _log_wandb(metrics: dict, step: int):
+        if wandb_run is None:
+            return
+        import wandb  # type: ignore
+        wandb.log(metrics, step=step)
+    
     if args.wandb:
         try:
             import wandb  # type: ignore
@@ -146,6 +153,26 @@ def train_teacher(args):
     
     # Initialize model
     model = SimpleUNet(img_channels=1, label_dim=10).to(device)
+
+    def _count_params(m: nn.Module) -> tuple[int, int]:
+        total = sum(p.numel() for p in m.parameters())
+        trainable = sum(p.numel() for p in m.parameters() if p.requires_grad)
+        return int(total), int(trainable)
+
+    total_params, trainable_params = _count_params(model)
+    print(f"Model parameters: total={total_params:,} trainable={trainable_params:,}")
+    if wandb_run is not None:
+        # Store in run summary (shows up as run-level metadata)
+        wandb_run.summary["model/num_params"] = total_params
+        wandb_run.summary["model/num_trainable_params"] = trainable_params
+        # Also log once as scalars for convenience
+        _log_wandb(
+            {
+                "model/num_params": total_params,
+                "model/num_trainable_params": trainable_params,
+            },
+            step=0,
+        )
     
     # Optimizer
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
@@ -162,12 +189,6 @@ def train_teacher(args):
     # Training loop
     model.train()
     global_step = 0
-
-    def _log_wandb(metrics: dict, step: int):
-        if wandb_run is None:
-            return
-        import wandb  # type: ignore
-        wandb.log(metrics, step=step)
     
     try:
         if wandb_run is not None and args.wandb_watch:

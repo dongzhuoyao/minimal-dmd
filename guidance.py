@@ -5,8 +5,11 @@ Contains real_unet (teacher, frozen) and fake_unet (student, trainable)
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .model import SimpleUNet, get_sigmas_karras
 import copy
+try:
+    from .model import SimpleUNet, get_sigmas_karras
+except ImportError:
+    from model import SimpleUNet, get_sigmas_karras
 
 
 class GuidanceModel(nn.Module):

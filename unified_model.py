@@ -4,8 +4,12 @@ Unified Model that wraps both feedforward generator and guidance model
 import torch
 import torch.nn as nn
 import copy
-from .guidance import GuidanceModel
-from .model import SimpleUNet
+try:
+    from .guidance import GuidanceModel
+    from .model import SimpleUNet
+except ImportError:
+    from guidance import GuidanceModel
+    from model import SimpleUNet
 
 
 class UnifiedModel(nn.Module):

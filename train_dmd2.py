@@ -7,6 +7,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
+from torchvision.utils import make_grid
 from tqdm import tqdm
 import argparse
 import os
@@ -20,6 +21,42 @@ except ImportError:
     from unified_model import UnifiedModel
 
 
+@torch.no_grad()
+def _sample_dmd2_grid(
+    feedforward_model: nn.Module,
+    device: torch.device,
+    *,
+    num_images: int,
+    conditioning_sigma: float,
+    num_classes: int = 10,
+) -> torch.Tensor:
+    """
+    Sample images from the distilled feedforward model (single forward pass).
+
+    Returns a grid tensor (C,H,W) in [0,1] suitable for W&B.
+    """
+    model_was_training = feedforward_model.training
+    feedforward_model.eval()
+
+    B = int(num_images)
+    if B <= 0:
+        raise ValueError("--wandb_sample_num_images must be > 0")
+
+    labels = torch.arange(B, device=device, dtype=torch.long) % int(num_classes)
+    sigma = float(conditioning_sigma)
+    scaled_noise = torch.randn(B, 1, 28, 28, device=device) * sigma
+    timestep_sigma = torch.ones(B, device=device) * sigma
+
+    x0 = feedforward_model(scaled_noise, timestep_sigma, labels)
+    vis = (x0.detach().cpu() + 1.0) / 2.0
+    vis = vis.clamp(0.0, 1.0)
+    grid = make_grid(vis, nrow=min(8, B))
+
+    if model_was_training:
+        feedforward_model.train()
+    return grid
+
+
 def train_dmd2(args):
     """Train DMD2 model"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -27,6 +64,39 @@ def train_dmd2(args):
     
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
+
+    # Optional: Weights & Biases logging
+    wandb_run = None
+    
+    def _log_wandb(metrics: dict, step: int):
+        if wandb_run is None:
+            return
+        import wandb  # type: ignore
+        wandb.log(metrics, step=step)
+    
+    if args.wandb:
+        try:
+            import wandb  # type: ignore
+        except Exception as e:
+            raise RuntimeError(
+                "W&B logging requested (--wandb) but wandb is not installed. "
+                "Install it with `pip install wandb` (and ensure you're logged in with `wandb login`)."
+            ) from e
+
+        print(
+            f"[wandb] enabled: project={args.wandb_project} mode={args.wandb_mode} "
+            f"run_name={args.wandb_run_name} entity={args.wandb_entity}"
+        )
+        os.makedirs(args.wandb_dir, exist_ok=True)
+        wandb_run = wandb.init(
+            project=args.wandb_project,
+            entity=args.wandb_entity,
+            name=args.wandb_run_name,
+            tags=args.wandb_tags,
+            mode=args.wandb_mode,
+            dir=args.wandb_dir,
+            config=vars(args),
+        )
     
     # Load MNIST dataset
     transform = transforms.Compose([
@@ -60,13 +130,68 @@ def train_dmd2(args):
         max_step_percent=args.max_step_percent,
         conditioning_sigma=args.conditioning_sigma
     ).to(device)
+
+    def _count_params(m: nn.Module) -> tuple[int, int]:
+        total = sum(p.numel() for p in m.parameters())
+        trainable = sum(p.numel() for p in m.parameters() if p.requires_grad)
+        return int(total), int(trainable)
+
+    # Log param counts once
+    total_params, trainable_params = _count_params(model)
+    gen_total, gen_trainable = _count_params(model.feedforward_model)
+    fake_total, fake_trainable = _count_params(model.guidance_model.fake_unet)
+    print(
+        "Model parameters: "
+        f"unified(total={total_params:,} trainable={trainable_params:,}) "
+        f"generator(total={gen_total:,} trainable={gen_trainable:,}) "
+        f"fake_unet(total={fake_total:,} trainable={fake_trainable:,})"
+    )
+    if wandb_run is not None:
+        wandb_run.summary["model/num_params"] = total_params
+        wandb_run.summary["model/num_trainable_params"] = trainable_params
+        wandb_run.summary["model/generator_num_params"] = gen_total
+        wandb_run.summary["model/generator_num_trainable_params"] = gen_trainable
+        wandb_run.summary["model/fake_unet_num_params"] = fake_total
+        wandb_run.summary["model/fake_unet_num_trainable_params"] = fake_trainable
+        _log_wandb(
+            {
+                "model/num_params": total_params,
+                "model/num_trainable_params": trainable_params,
+                "model/generator_num_params": gen_total,
+                "model/generator_num_trainable_params": gen_trainable,
+                "model/fake_unet_num_params": fake_total,
+                "model/fake_unet_num_trainable_params": fake_trainable,
+            },
+            step=0,
+        )
     
-    # Load teacher checkpoint into real_unet
-    if args.teacher_checkpoint:
-        print(f"Loading teacher checkpoint from {args.teacher_checkpoint}")
-        checkpoint = torch.load(args.teacher_checkpoint, map_location=device)
-        model.guidance_model.real_unet.load_state_dict(checkpoint['model_state_dict'])
-        print("Teacher model loaded successfully")
+    # Load teacher checkpoint into real_unet (required)
+    if not args.teacher_checkpoint:
+        raise ValueError("--teacher_checkpoint is required (set it via CLI or YAML config).")
+    
+    if not os.path.exists(args.teacher_checkpoint):
+        raise FileNotFoundError(
+            f"Teacher checkpoint not found: {args.teacher_checkpoint}\n"
+            f"Please train a teacher model first using train_teacher.py"
+        )
+    
+    print(f"Loading teacher checkpoint from {args.teacher_checkpoint}")
+    teacher_checkpoint = torch.load(args.teacher_checkpoint, map_location=device)
+    
+    # Load teacher model weights into real_unet (frozen teacher)
+    if 'model_state_dict' in teacher_checkpoint:
+        model.guidance_model.real_unet.load_state_dict(teacher_checkpoint['model_state_dict'])
+        print("Teacher model (real_unet) loaded successfully")
+    else:
+        raise ValueError(
+            f"Teacher checkpoint missing 'model_state_dict' key. "
+            f"Found keys: {list(teacher_checkpoint.keys())}"
+        )
+    
+    # Ensure real_unet is frozen
+    model.guidance_model.real_unet.requires_grad_(False)
+    model.guidance_model.real_unet.eval()
+    print("Teacher model (real_unet) is frozen")
     
     # Optimizers
     optimizer_generator = optim.AdamW(
@@ -88,6 +213,39 @@ def train_dmd2(args):
     model.train()
     global_step = 0
     
+    # Checkpoint resuming support
+    if args.resume_from_checkpoint:
+        if not os.path.exists(args.resume_from_checkpoint):
+            raise FileNotFoundError(f"Resume checkpoint not found: {args.resume_from_checkpoint}")
+        
+        print(f"Resuming training from checkpoint: {args.resume_from_checkpoint}")
+        resume_checkpoint = torch.load(args.resume_from_checkpoint, map_location=device)
+        
+        # Load model states
+        if 'feedforward_model_state_dict' in resume_checkpoint:
+            model.feedforward_model.load_state_dict(resume_checkpoint['feedforward_model_state_dict'])
+            print("  ✓ Feedforward model loaded")
+        
+        if 'guidance_fake_unet_state_dict' in resume_checkpoint:
+            model.guidance_model.fake_unet.load_state_dict(resume_checkpoint['guidance_fake_unet_state_dict'])
+            print("  ✓ Guidance fake_unet loaded")
+        
+        # Load optimizer states
+        if 'optimizer_generator_state_dict' in resume_checkpoint:
+            optimizer_generator.load_state_dict(resume_checkpoint['optimizer_generator_state_dict'])
+            print("  ✓ Generator optimizer loaded")
+        
+        if 'optimizer_guidance_state_dict' in resume_checkpoint:
+            optimizer_guidance.load_state_dict(resume_checkpoint['optimizer_guidance_state_dict'])
+            print("  ✓ Guidance optimizer loaded")
+        
+        # Resume from step
+        if 'step' in resume_checkpoint:
+            global_step = resume_checkpoint['step']
+            print(f"  ✓ Resuming from step {global_step}")
+        
+        print("Resume complete!")
+    
     if args.step_number <= 0:
         raise ValueError("--step_number must be > 0 (epoch-based training has been removed).")
 
@@ -95,114 +253,184 @@ def train_dmd2(args):
     running_dm_sum = 0.0
     running_fake_sum = 0.0
     pbar = tqdm(total=args.step_number, desc="Training", initial=global_step)
+    try:
+        if wandb_run is not None and args.wandb_watch:
+            import wandb  # type: ignore
+            wandb.watch(model, log="all", log_freq=args.wandb_log_every)
 
-    while global_step < args.step_number:
-        try:
-            images, labels = next(data_iter)
-        except StopIteration:
-            data_iter = iter(train_loader)
-            images, labels = next(data_iter)
-        batch_idx = global_step % len(train_loader)
-        
-        images = images.to(device)
-        labels = labels.to(device)
+        # Log a quick "what does training data look like" grid once
+        if wandb_run is not None and args.wandb_log_images:
+            try:
+                images0, _labels0 = next(iter(train_loader))
+                # images are in [-1, 1]; map to [0, 1] for visualization
+                vis = (images0[: args.wandb_num_log_images].detach().cpu() + 1.0) / 2.0
+                grid = make_grid(vis, nrow=min(8, vis.shape[0]))
+                import wandb  # type: ignore
+                _log_wandb({"train/examples": wandb.Image(grid)}, step=0)
+            except Exception as e:
+                print(f"[wandb] failed to log train/examples: {e}")
 
-        # Convert labels to one-hot
-        labels_onehot = eye_matrix[labels]
+        while global_step < args.step_number:
+            try:
+                images, labels = next(data_iter)
+            except StopIteration:
+                data_iter = iter(train_loader)
+                images, labels = next(data_iter)
+            batch_idx = global_step % len(train_loader)
+            
+            images = images.to(device)
+            labels = labels.to(device)
 
-        # Determine if we should compute generator gradient
-        COMPUTE_GENERATOR_GRADIENT = (global_step % args.dfake_gen_update_ratio == 0)
+            # Convert labels to one-hot
+            labels_onehot = eye_matrix[labels]
 
-        # ========== Generator Turn ==========
-        # Generate scaled noise
-        scaled_noise = torch.randn_like(images) * args.conditioning_sigma
-        timestep_sigma = torch.ones(images.shape[0], device=device) * args.conditioning_sigma
+            # Determine if we should compute generator gradient
+            COMPUTE_GENERATOR_GRADIENT = (global_step % args.dfake_gen_update_ratio == 0)
 
-        # Random labels for generation
-        gen_labels = torch.randint(0, 10, (images.shape[0],), device=device)
-        gen_labels_onehot = eye_matrix[gen_labels]
+            # ========== Generator Turn ==========
+            # Generate scaled noise
+            scaled_noise = torch.randn_like(images) * args.conditioning_sigma
+            timestep_sigma = torch.ones(images.shape[0], device=device) * args.conditioning_sigma
 
-        # Real training dict (for optional GAN loss)
-        real_train_dict = {
-            "real_image": images,
-            "real_label": labels_onehot
-        }
+            # Random labels for generation
+            gen_labels = torch.randint(0, 10, (images.shape[0],), device=device)
+            gen_labels_onehot = eye_matrix[gen_labels]
 
-        # Forward pass through generator
-        generator_loss_dict, generator_log_dict = model(
-            scaled_noise=scaled_noise,
-            timestep_sigma=timestep_sigma,
-            labels=gen_labels_onehot,
-            real_train_dict=real_train_dict if COMPUTE_GENERATOR_GRADIENT else None,
-            compute_generator_gradient=COMPUTE_GENERATOR_GRADIENT,
-            generator_turn=True,
-            guidance_turn=False
-        )
+            # Real training dict (for optional GAN loss)
+            real_train_dict = {
+                "real_image": images,
+                "real_label": labels_onehot
+            }
 
-        # Update generator if needed
-        if COMPUTE_GENERATOR_GRADIENT:
-            generator_loss = generator_loss_dict["loss_dm"] * args.dm_loss_weight
+            # Forward pass through generator
+            generator_loss_dict, generator_log_dict = model(
+                scaled_noise=scaled_noise,
+                timestep_sigma=timestep_sigma,
+                labels=gen_labels_onehot,
+                real_train_dict=real_train_dict if COMPUTE_GENERATOR_GRADIENT else None,
+                compute_generator_gradient=COMPUTE_GENERATOR_GRADIENT,
+                generator_turn=True,
+                guidance_turn=False
+            )
 
-            optimizer_generator.zero_grad()
-            generator_loss.backward()
-            torch.nn.utils.clip_grad_norm_(
-                model.feedforward_model.parameters(),
+            gen_grad_norm = None
+            generator_loss = None
+
+            # Update generator if needed
+            if COMPUTE_GENERATOR_GRADIENT:
+                generator_loss = generator_loss_dict["loss_dm"] * args.dm_loss_weight
+
+                optimizer_generator.zero_grad()
+                generator_loss.backward()
+                gen_grad_norm = torch.nn.utils.clip_grad_norm_(
+                    model.feedforward_model.parameters(),
+                    args.max_grad_norm
+                )
+                optimizer_generator.step()
+                optimizer_generator.zero_grad()
+                optimizer_guidance.zero_grad()
+
+            # ========== Guidance Turn ==========
+            # Update guidance model (fake_unet)
+            guidance_loss_dict, guidance_log_dict = model(
+                scaled_noisy_image=None,  # Not used in guidance turn
+                timestep_sigma=None,  # Not used in guidance turn
+                labels=None,  # Not used in guidance turn
+                compute_generator_gradient=False,
+                generator_turn=False,
+                guidance_turn=True,
+                guidance_data_dict=generator_log_dict['guidance_data_dict']
+            )
+
+            guidance_loss = guidance_loss_dict["loss_fake_mean"]
+
+            optimizer_guidance.zero_grad()
+            guidance_loss.backward()
+            fake_grad_norm = torch.nn.utils.clip_grad_norm_(
+                model.guidance_model.fake_unet.parameters(),
                 args.max_grad_norm
             )
-            optimizer_generator.step()
-            optimizer_generator.zero_grad()
+            optimizer_guidance.step()
             optimizer_guidance.zero_grad()
+            optimizer_generator.zero_grad()
 
-        # ========== Guidance Turn ==========
-        # Update guidance model (fake_unet)
-        guidance_loss_dict, guidance_log_dict = model(
-            scaled_noisy_image=None,  # Not used in guidance turn
-            timestep_sigma=None,  # Not used in guidance turn
-            labels=None,  # Not used in guidance turn
-            compute_generator_gradient=False,
-            generator_turn=False,
-            guidance_turn=True,
-            guidance_data_dict=generator_log_dict['guidance_data_dict']
-        )
+            global_step += 1
 
-        guidance_loss = guidance_loss_dict["loss_fake_mean"]
+            # Update progress bar
+            # (these are running averages over all steps so far)
+            if COMPUTE_GENERATOR_GRADIENT and generator_loss is not None:
+                running_dm_sum += float(generator_loss.item())
+            running_fake_sum += float(guidance_loss.item())
+            avg_dm = running_dm_sum / max(1, global_step // args.dfake_gen_update_ratio)
+            avg_fake = running_fake_sum / max(1, global_step)
+            pbar.update(1)
+            pbar.set_postfix({"loss_dm": avg_dm, "loss_fake": avg_fake})
 
-        optimizer_guidance.zero_grad()
-        guidance_loss.backward()
-        torch.nn.utils.clip_grad_norm_(
-            model.guidance_model.fake_unet.parameters(),
-            args.max_grad_norm
-        )
-        optimizer_guidance.step()
-        optimizer_guidance.zero_grad()
-        optimizer_generator.zero_grad()
+            # W&B scalar logging
+            if wandb_run is not None and (global_step % args.wandb_log_every == 0):
+                metrics = {
+                    "train/loss_fake": float(guidance_loss.item()),
+                    "train/avg_loss_fake": float(avg_fake),
+                    "train/batch_idx": int(batch_idx),
+                    "train/guidance_lr": float(optimizer_guidance.param_groups[0]["lr"]),
+                    "train/guidance_grad_norm": float(fake_grad_norm),
+                }
+                if COMPUTE_GENERATOR_GRADIENT and generator_loss is not None:
+                    metrics.update(
+                        {
+                            "train/loss_dm": float(generator_loss.item()),
+                            "train/avg_loss_dm": float(avg_dm),
+                            "train/generator_lr": float(optimizer_generator.param_groups[0]["lr"]),
+                            "train/generator_grad_norm": float(gen_grad_norm) if gen_grad_norm is not None else 0.0,
+                        }
+                    )
+                _log_wandb(metrics, step=global_step)
 
-        global_step += 1
+            # Periodically sample from the current distilled generator and log an image grid
+            if (
+                wandb_run is not None
+                and args.wandb_log_samples
+                and (global_step % args.wandb_sample_every == 0)
+            ):
+                try:
+                    grid = _sample_dmd2_grid(
+                        model.feedforward_model,
+                        device,
+                        num_images=args.wandb_sample_num_images,
+                        conditioning_sigma=args.conditioning_sigma,
+                    )
+                    import wandb  # type: ignore
+                    _log_wandb({"samples/dmd2": wandb.Image(grid)}, step=global_step)
+                except Exception as e:
+                    print(f"[wandb] sample logging failed at step {global_step}: {e}")
 
-        # Update progress bar
-        # (these are running averages over all steps so far)
-        if COMPUTE_GENERATOR_GRADIENT:
-            running_dm_sum += generator_loss.item()
-        running_fake_sum += guidance_loss.item()
-        avg_dm = running_dm_sum / max(1, global_step // args.dfake_gen_update_ratio)
-        avg_fake = running_fake_sum / max(1, global_step)
-        pbar.update(1)
-        pbar.set_postfix({"loss_dm": avg_dm, "loss_fake": avg_fake})
+            # Save checkpoint periodically
+            if global_step % args.save_every == 0:
+                checkpoint_path = os.path.join(
+                    args.output_dir,
+                    f"dmd2_checkpoint_step_{global_step}.pt"
+                )
+                torch.save({
+                    'feedforward_model_state_dict': model.feedforward_model.state_dict(),
+                    'guidance_fake_unet_state_dict': model.guidance_model.fake_unet.state_dict(),
+                    'optimizer_generator_state_dict': optimizer_generator.state_dict(),
+                    'optimizer_guidance_state_dict': optimizer_guidance.state_dict(),
+                    'step': global_step,
+                }, checkpoint_path)
+                print(f"\nSaved checkpoint to {checkpoint_path}")
 
-        # Save checkpoint periodically
-        if global_step % args.save_every == 0:
-            checkpoint_path = os.path.join(
-                args.output_dir,
-                f"dmd2_checkpoint_step_{global_step}.pt"
-            )
-            torch.save({
-                'feedforward_model_state_dict': model.feedforward_model.state_dict(),
-                'guidance_fake_unet_state_dict': model.guidance_model.fake_unet.state_dict(),
-                'optimizer_generator_state_dict': optimizer_generator.state_dict(),
-                'optimizer_guidance_state_dict': optimizer_guidance.state_dict(),
-                'step': global_step,
-            }, checkpoint_path)
-            print(f"\nSaved checkpoint to {checkpoint_path}")
+                if wandb_run is not None and args.wandb_log_checkpoints:
+                    import wandb  # type: ignore
+                    artifact = wandb.Artifact(
+                        name=f"dmd2-checkpoint-step-{global_step}",
+                        type="model",
+                        metadata={"step": global_step},
+                    )
+                    artifact.add_file(checkpoint_path)
+                    wandb_run.log_artifact(artifact)
+    finally:
+        if wandb_run is not None:
+            wandb_run.finish()
     
     # Save final checkpoint
     final_checkpoint_path = os.path.join(args.output_dir, "dmd2_final.pt")
@@ -238,9 +466,27 @@ if __name__ == "__main__":
     parser.add_argument("--dm_loss_weight", type=float, default=1.0, help="Weight for distribution matching loss")
     parser.add_argument("--max_grad_norm", type=float, default=1.0, help="Maximum gradient norm")
     parser.add_argument("--save_every", type=int, default=5000, help="Save checkpoint every N steps")
+
+    # Weights & Biases (optional)
+    parser.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging")
+    parser.add_argument("--wandb_project", type=str, default="minimal-dmd", help="W&B project name")
+    parser.add_argument("--wandb_entity", type=str, default=None, help="W&B entity (team/user); optional")
+    parser.add_argument("--wandb_run_name", type=str, default=None, help="W&B run name; optional")
+    parser.add_argument("--wandb_mode", type=str, default="online", choices=["online", "offline", "disabled"], help="W&B mode")
+    parser.add_argument("--wandb_tags", nargs="*", default=None, help="W&B tags (space-separated)")
+    parser.add_argument("--wandb_dir", type=str, default="./log/wandb", help="Directory to store W&B run files")
+    parser.add_argument("--wandb_log_every", type=int, default=50, help="Log scalars every N steps")
+    parser.add_argument("--wandb_watch", action="store_true", help="Enable wandb.watch(model)")
+    parser.add_argument("--wandb_log_images", action="store_true", help="Log a small training image grid once at start")
+    parser.add_argument("--wandb_num_log_images", type=int, default=32, help="Number of images to include in logged grid")
+    parser.add_argument("--wandb_log_checkpoints", action="store_true", help="Log checkpoints as W&B artifacts when saved")
+    parser.add_argument("--wandb_log_samples", action="store_true", help="Log sampled images during training")
+    parser.add_argument("--wandb_sample_every", type=int, default=1000, help="Sample/log images every N steps")
+    parser.add_argument("--wandb_sample_num_images", type=int, default=64, help="Number of sampled images per logged grid")
+    
+    # Checkpoint resuming
+    parser.add_argument("--resume_from_checkpoint", type=str, default=None, help="Path to DMD2 checkpoint to resume from (optional)")
     
     args = parse_args_with_optional_yaml(parser)
-    if not args.teacher_checkpoint:
-        raise ValueError("--teacher_checkpoint is required (set it via CLI or YAML config).")
     train_dmd2(args)
 

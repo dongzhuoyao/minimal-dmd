@@ -9,7 +9,6 @@ data_dir: ./data
 output_dir: ./log/checkpoints/teacher
 batch_size: 128
 lr: 1.0e-4
-step_number: 100000
 num_train_timesteps: 1000
 sigma_min: 0.002
 sigma_max: 80.0
@@ -40,13 +39,17 @@ wandb:
 
 # ---- dmd2 training (train_dmd2.py) ----
 # (train_teacher.py will ignore these keys)
-dmd2_output_dir: ./log/checkpoints/dmd2  # ignored by current scripts; keep output_dir in a separate config if you want different dirs
+output_dir: ./log/checkpoints/dmd2  # NOTE: override this when using this config for DMD2
 teacher_checkpoint: ./log/checkpoints/teacher/teacher_final.pt
 generator_lr: 2.0e-6
 guidance_lr: 2.0e-6
-# step_number: 100000  # NOTE: if you reuse this config for DMD2, set output_dir accordingly
+step_number: 400000
 min_step_percent: 0.02
 max_step_percent: 0.98
 conditioning_sigma: 80.0
 dfake_gen_update_ratio: 10
 dm_loss_weight: 1.0
+# resume_from_checkpoint: null  # Optional: path to DMD2 checkpoint to resume from
+
+# W&B for DMD2 (can reuse the same wandb: block above, or override here)
+# The wandb: block above will be used by both scripts if present

@@ -95,8 +95,8 @@ Use the teacher checkpoint to train the DMD2 distilled model:
 ```bash
 python train_dmd2.py \
     --data_dir ./data \
-    --output_dir ./checkpoints/dmd2 \
-    --teacher_checkpoint ./checkpoints/teacher/teacher_final.pt \
+    --output_dir ./log/checkpoints/dmd2 \
+    --teacher_checkpoint ./log/checkpoints/teacher/teacher_final.pt \
     --batch_size 128 \
     --generator_lr 2e-6 \
     --guidance_lr 2e-6 \
@@ -104,6 +104,63 @@ python train_dmd2.py \
     --dfake_gen_update_ratio 10 \
     --save_every 5000
 ```
+
+#### Using a YAML config
+
+Use the dedicated DMD2 config file:
+
+```bash
+python train_dmd2.py --config config_train1.yaml
+```
+
+**Note**: Make sure `teacher_checkpoint` in `config_train1.yaml` points to a trained teacher checkpoint (default: `./log/checkpoints/teacher/teacher_final.pt`).
+
+#### Optional: Weights & Biases logging (DMD2)
+
+W&B logging works the same way as teacher training. You can enable it via YAML config or CLI:
+
+**YAML** (add to your config file):
+```yaml
+wandb:
+  enabled: true
+  project: minimal-dmd
+  run_name: dmd2-mnist
+  log_samples: true
+  sample_every: 1000
+```
+
+**CLI**:
+```bash
+python train_dmd2.py \
+    --data_dir ./data \
+    --output_dir ./log/checkpoints/dmd2 \
+    --teacher_checkpoint ./log/checkpoints/teacher/teacher_final.pt \
+    --wandb \
+    --wandb_project minimal-dmd \
+    --wandb_run_name dmd2-mnist \
+    --wandb_dir ./log/wandb \
+    --wandb_log_every 50 \
+    --wandb_log_samples \
+    --wandb_sample_every 1000 \
+    --wandb_log_checkpoints
+```
+
+#### Resuming from a checkpoint
+
+If training is interrupted, you can resume from a saved checkpoint:
+
+```bash
+python train_dmd2.py \
+    --config config_train1.yaml \
+    --resume_from_checkpoint ./log/checkpoints/dmd2/dmd2_checkpoint_step_50000.pt
+```
+
+Or set `resume_from_checkpoint` in `config_train1.yaml`.
+
+This will restore:
+- Model weights (feedforward_model and fake_unet)
+- Optimizer states (both generator and guidance optimizers)
+- Training step counter (continues from where it left off)
 
 ## Key Hyperparameters
 
@@ -131,7 +188,7 @@ After training, you can generate images using:
 
 ```bash
 python generate.py \
-    --checkpoint ./checkpoints/dmd2/dmd2_final.pt \
+    --checkpoint ./log/checkpoints/dmd2/dmd2_final.pt \
     --output_dir ./generated \
     --num_samples 16
 ```
