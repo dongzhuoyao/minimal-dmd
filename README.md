@@ -31,11 +31,47 @@ python train_teacher.py \
     --output_dir ./checkpoints/teacher \
     --batch_size 128 \
     --lr 1e-4 \
-    --num_epochs 100 \
+    --step_number 100000 \
     --save_every 5000
 ```
 
 This will create checkpoints in `./checkpoints/teacher/`. The final checkpoint will be `teacher_final.pt`.
+
+#### Using a YAML config
+
+Both training scripts accept `--config` to load defaults from a YAML file (CLI flags override YAML). You’ll need PyYAML:
+
+```bash
+pip install pyyaml
+```
+
+Example:
+
+```bash
+python train_teacher.py --config config_train0.yaml
+```
+
+#### Optional: Weights & Biases logging
+
+To enable W&B logging, install and login first:
+
+```bash
+pip install wandb
+wandb login
+```
+
+Then run with:
+
+```bash
+python train_teacher.py \
+    --wandb \
+    --wandb_project minimal-dmd \
+    --wandb_run_name teacher-mnist \
+    --step_number 100000 \
+    --wandb_log_every 50 \
+    --wandb_log_images \
+    --wandb_log_checkpoints
+```
 
 ### Step 2: Train DMD2 Model
 

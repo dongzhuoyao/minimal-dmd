@@ -1,0 +1,47 @@
+# Shared training config example (works with both train_teacher.py and train_dmd2.py)
+# - Each script will ignore unknown keys (useful to keep a single config file).
+# - CLI flags override anything set here.
+
+# ---- data / io ----
+data_dir: ./data
+
+# ---- teacher training (train_teacher.py) ----
+output_dir: ./checkpoints/teacher
+batch_size: 128
+lr: 1.0e-4
+step_number: 100000
+num_epochs: 100   # used only if step_number <= 0
+num_train_timesteps: 1000
+sigma_min: 0.002
+sigma_max: 80.0
+sigma_data: 0.5
+rho: 7.0
+max_grad_norm: 1.0
+save_every: 5000
+
+# Optional W&B block (train_teacher.py)
+wandb:
+  enabled: true
+  project: minimal-dmd
+  run_name: teacher-train0
+  mode: online          # online|offline|disabled
+  tags: ["teacher", "mnist", "train0"]
+  log_every: 50
+  watch: false
+  log_images: true
+  num_log_images: 32
+  log_checkpoints: true
+
+# ---- dmd2 training (train_dmd2.py) ----
+# (train_teacher.py will ignore these keys)
+dmd2_output_dir: ./checkpoints/dmd2  # ignored by current scripts; keep output_dir in a separate config if you want different dirs
+teacher_checkpoint: ./checkpoints/teacher/teacher_final.pt
+generator_lr: 2.0e-6
+guidance_lr: 2.0e-6
+# step_number: 100000  # NOTE: if you reuse this config for DMD2, set output_dir accordingly
+# num_epochs: 50       # used only if step_number <= 0
+min_step_percent: 0.02
+max_step_percent: 0.98
+conditioning_sigma: 80.0
+dfake_gen_update_ratio: 10
+dm_loss_weight: 1.0

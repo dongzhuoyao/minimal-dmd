@@ -11,6 +11,10 @@ from tqdm import tqdm
 import argparse
 import os
 try:
+    from .config_utils import parse_args_with_optional_yaml
+except ImportError:
+    from config_utils import parse_args_with_optional_yaml
+try:
     from .unified_model import UnifiedModel
 except ImportError:
     from unified_model import UnifiedModel
@@ -84,14 +88,24 @@ def train_dmd2(args):
     model.train()
     global_step = 0
     
-    for epoch in range(args.num_epochs):
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.num_epochs}")
-        epoch_loss_dm = 0.0
-        epoch_loss_fake = 0.0
+    if args.step_number <= 0:
+        raise ValueError("--step_number must be > 0 (epoch-based training has been removed).")
+
+    data_iter = iter(train_loader)
+    running_dm_sum = 0.0
+    running_fake_sum = 0.0
+    pbar = tqdm(total=args.step_number, desc="Training", initial=global_step)
+
+    while global_step < args.step_number:
+        try:
+            images, labels = next(data_iter)
+        except StopIteration:
+            data_iter = iter(train_loader)
+            images, labels = next(data_iter)
+        batch_idx = global_step % len(train_loader)
         
-        for batch_idx, (images, labels) in enumerate(pbar):
-            images = images.to(device)
-            labels = labels.to(device)
+        images = images.to(device)
+        labels = labels.to(device)
             
             # Convert labels to one-hot
             labels_onehot = eye_matrix[labels]
@@ -138,8 +152,6 @@ def train_dmd2(args):
                 optimizer_generator.step()
                 optimizer_generator.zero_grad()
                 optimizer_guidance.zero_grad()
-                
-                epoch_loss_dm += generator_loss.item()
             
             # ========== Guidance Turn ==========
             # Update guidance model (fake_unet)
@@ -165,15 +177,17 @@ def train_dmd2(args):
             optimizer_guidance.zero_grad()
             optimizer_generator.zero_grad()
             
-            epoch_loss_fake += guidance_loss.item()
-            
             global_step += 1
             
             # Update progress bar
-            pbar.set_postfix({
-                "loss_dm": epoch_loss_dm / max(1, (batch_idx + 1) // args.dfake_gen_update_ratio),
-                "loss_fake": epoch_loss_fake / (batch_idx + 1),
-            })
+            # (these are running averages over all steps so far)
+            if COMPUTE_GENERATOR_GRADIENT:
+                running_dm_sum += generator_loss.item()
+            running_fake_sum += guidance_loss.item()
+            avg_dm = running_dm_sum / max(1, global_step // args.dfake_gen_update_ratio)
+            avg_fake = running_fake_sum / max(1, global_step)
+            pbar.update(1)
+            pbar.set_postfix({"loss_dm": avg_dm, "loss_fake": avg_fake})
             
             # Save checkpoint periodically
             if global_step % args.save_every == 0:
@@ -187,7 +201,6 @@ def train_dmd2(args):
                     'optimizer_generator_state_dict': optimizer_generator.state_dict(),
                     'optimizer_guidance_state_dict': optimizer_guidance.state_dict(),
                     'step': global_step,
-                    'epoch': epoch,
                 }, checkpoint_path)
                 print(f"\nSaved checkpoint to {checkpoint_path}")
     
@@ -199,20 +212,20 @@ def train_dmd2(args):
         'optimizer_generator_state_dict': optimizer_generator.state_dict(),
         'optimizer_guidance_state_dict': optimizer_guidance.state_dict(),
         'step': global_step,
-        'epoch': args.num_epochs,
     }, final_checkpoint_path)
     print(f"\nSaved final checkpoint to {final_checkpoint_path}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train DMD2 model on MNIST")
+    parser.add_argument("--config", type=str, default=None, help="Path to YAML config file (optional). CLI flags override YAML.")
     parser.add_argument("--data_dir", type=str, default="./data", help="Directory for MNIST data")
     parser.add_argument("--output_dir", type=str, default="./checkpoints/dmd2", help="Output directory for checkpoints")
-    parser.add_argument("--teacher_checkpoint", type=str, required=True, help="Path to teacher checkpoint")
+    parser.add_argument("--teacher_checkpoint", type=str, default=None, help="Path to teacher checkpoint (required; can be set via YAML)")
     parser.add_argument("--batch_size", type=int, default=128, help="Batch size")
     parser.add_argument("--generator_lr", type=float, default=2e-6, help="Generator learning rate")
     parser.add_argument("--guidance_lr", type=float, default=2e-6, help="Guidance learning rate")
-    parser.add_argument("--num_epochs", type=int, default=50, help="Number of epochs")
+    parser.add_argument("--step_number", type=int, default=100_000, help="Total training steps to run (default: 100k)")
     parser.add_argument("--num_train_timesteps", type=int, default=1000, help="Number of diffusion timesteps")
     parser.add_argument("--sigma_min", type=float, default=0.002, help="Minimum sigma")
     parser.add_argument("--sigma_max", type=float, default=80.0, help="Maximum sigma")
@@ -226,6 +239,8 @@ if __name__ == "__main__":
     parser.add_argument("--max_grad_norm", type=float, default=1.0, help="Maximum gradient norm")
     parser.add_argument("--save_every", type=int, default=5000, help="Save checkpoint every N steps")
     
-    args = parser.parse_args()
+    args = parse_args_with_optional_yaml(parser)
+    if not args.teacher_checkpoint:
+        raise ValueError("--teacher_checkpoint is required (set it via CLI or YAML config).")
     train_dmd2(args)
 
