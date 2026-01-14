@@ -304,7 +304,7 @@ def train_dmd2(args):
 
             # Forward pass through generator
             generator_loss_dict, generator_log_dict = model(
-                scaled_noise=scaled_noise,
+                scaled_noisy_image=scaled_noise,
                 timestep_sigma=timestep_sigma,
                 labels=gen_labels_onehot,
                 real_train_dict=real_train_dict if COMPUTE_GENERATOR_GRADIENT else None,
