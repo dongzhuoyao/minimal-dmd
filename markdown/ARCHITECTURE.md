@@ -27,7 +27,7 @@ Wraps both:
 
 ## Training Process
 
-### Phase 1: Teacher Training (`train_teacher.py`)
+### Phase 1: Teacher Training (`train0.py`)
 Standard diffusion model training:
 1. Sample random timestep `t`
 2. Add noise to image: `x_t = x_0 + σ_t * ε`

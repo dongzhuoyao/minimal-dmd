@@ -182,7 +182,7 @@ def train_dmd2(cfg: DictConfig):
     if not os.path.exists(teacher_checkpoint_path):
         raise FileNotFoundError(
             f"Teacher checkpoint not found: {teacher_checkpoint_path}\n"
-            f"Please train a teacher model first using train_teacher.py"
+            f"Please train a teacher model first using train0.py"
         )
     
     print(f"Loading teacher checkpoint from {teacher_checkpoint_path}")

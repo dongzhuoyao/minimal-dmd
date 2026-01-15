@@ -36,7 +36,7 @@ The teacher training script uses **Hydra** for configuration management, just li
 #### Basic Usage (Default Config)
 
 ```bash
-python train_teacher.py
+python train0.py
 ```
 
 This uses the default config at `configs/config_teacher.yaml`.
@@ -44,7 +44,7 @@ This uses the default config at `configs/config_teacher.yaml`.
 #### Using a Specific Config
 
 ```bash
-python train_teacher.py --config-name=config_teacher_train0
+python train0.py --config-name=config_teacher_train0
 ```
 
 This loads `configs/config_teacher_train0.yaml` which has W&B enabled. Available configs:
@@ -57,13 +57,13 @@ You can override any config value from the command line:
 
 ```bash
 # Override single values
-python train_teacher.py --config-name=config_teacher \
+python train0.py --config-name=config_teacher \
     batch_size=256 \
     lr=2e-4 \
     step_number=200000
 
 # Override nested values (wandb)
-python train_teacher.py --config-name=config_teacher \
+python train0.py --config-name=config_teacher \
     wandb.enabled=true \
     wandb.project=my-project \
     wandb.run_name=teacher-experiment
@@ -109,7 +109,7 @@ wandb:
 Or override from command line:
 
 ```bash
-python train_teacher.py --config-name=config_teacher \
+python train0.py --config-name=config_teacher \
     wandb.enabled=true \
     wandb.run_name=teacher-experiment \
     wandb.log_samples=true
@@ -253,7 +253,7 @@ The hyperparameters are set to match the full DMD2 implementation:
 - `model.py`: Simple UNet architecture for MNIST
 - `guidance.py`: Guidance model with distribution matching loss
 - `unified_model.py`: Unified wrapper for generator and guidance
-- `train_teacher.py`: Script to train the teacher diffusion model (uses Hydra)
+- `train0.py`: Script to train the teacher diffusion model (uses Hydra)
 - `train_dmd2.py`: Script to train the DMD2 distilled model (uses Hydra)
 - `generate.py`: Script to generate images from trained model
 - `configs/`: Hydra configuration files
