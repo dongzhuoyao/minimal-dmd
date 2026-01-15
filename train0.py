@@ -344,7 +344,7 @@ def train_teacher(cfg: DictConfig):
     print(f"\nSaved final checkpoint to {final_checkpoint_path}")
 
 
-@hydra.main(version_base=None, config_path="configs", config_name="config_teacher")
+@hydra.main(version_base=None, config_path="configs", config_name="train0")
 def main(cfg: DictConfig) -> None:
     train_teacher(cfg)
 
