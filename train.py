@@ -4,6 +4,7 @@ Trains a fast feedforward model using DMD2 distillation
 """
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
@@ -16,8 +17,10 @@ from hydra.utils import get_original_cwd
 from omegaconf import DictConfig, OmegaConf
 try:
     from .unified_model import UnifiedModel
+    from .model import get_sigmas_karras
 except ImportError:
     from unified_model import UnifiedModel
+    from model import get_sigmas_karras
 
 
 @torch.no_grad()
@@ -53,6 +56,51 @@ def _sample_dmd2_grid(
 
     if model_was_training:
         feedforward_model.train()
+    return grid
+
+
+@torch.no_grad()
+def _sample_teacher_grid(
+    teacher_model: nn.Module,
+    device: torch.device,
+    *,
+    num_images: int,
+    conditioning_sigma: float,
+    num_classes: int = 10,
+) -> torch.Tensor:
+    """
+    Sample images from the teacher model using single forward pass (same as DMD for fair comparison).
+    
+    This samples from the initial teacher checkpoint to compare with DMD samples.
+    Both use single-step sampling for fair comparison.
+
+    Returns a grid tensor (C,H,W) in [0,1] suitable for W&B.
+    """
+    model_was_training = teacher_model.training
+    teacher_model.eval()
+
+    B = int(num_images)
+    if B <= 0:
+        raise ValueError("--wandb_sample_num_images must be > 0")
+
+    # Cycle labels 0..9 to make the grid interpretable (same as DMD)
+    labels = torch.arange(B, device=device, dtype=torch.long) % int(num_classes)
+    sigma = float(conditioning_sigma)
+    
+    # Single-step sampling: same as DMD
+    scaled_noise = torch.randn(B, 1, 28, 28, device=device) * sigma
+    timestep_sigma = torch.ones(B, device=device) * sigma
+    
+    # Single forward pass
+    x0 = teacher_model(scaled_noise, timestep_sigma, labels)
+    
+    # Map from [-1,1] to [0,1]
+    vis = (x0.detach().cpu() + 1.0) / 2.0
+    vis = vis.clamp(0.0, 1.0)
+    grid = make_grid(vis, nrow=min(8, B))
+
+    if model_was_training:
+        teacher_model.train()
     return grid
 
 
@@ -405,21 +453,56 @@ def train(cfg: DictConfig):
                     )
                 _log_wandb(metrics, step=global_step)
 
-            # Periodically sample from the current distilled generator and log an image grid
+            # Periodically sample from both DMD and teacher for comparison
             if (
                 wandb_run is not None
                 and cfg.wandb.log_samples
                 and (global_step % cfg.wandb.sample_every == 0)
             ):
                 try:
-                    grid = _sample_dmd2_grid(
+                    import wandb  # type: ignore
+                    
+                    # Sample from DMD model (single forward pass)
+                    dmd_grid = _sample_dmd2_grid(
                         model.feedforward_model,
                         device,
                         num_images=cfg.wandb.sample_num_images,
                         conditioning_sigma=cfg.conditioning_sigma,
                     )
-                    import wandb  # type: ignore
-                    _log_wandb({"samples/dmd2": wandb.Image(grid)}, step=global_step)
+                    _log_wandb({"samples/dmd2": wandb.Image(dmd_grid)}, step=global_step)
+                    
+                    # Sample from teacher model (single-step, same as DMD for fair comparison)
+                    teacher_grid = _sample_teacher_grid(
+                        model.guidance_model.real_unet,
+                        device,
+                        num_images=cfg.wandb.sample_num_images,
+                        conditioning_sigma=cfg.conditioning_sigma,
+                    )
+                    _log_wandb({"samples/teacher": wandb.Image(teacher_grid)}, step=global_step)
+                    
+                    # Create side-by-side comparison (teacher left, DMD right)
+                    # Ensure both grids have the same height for proper alignment
+                    if teacher_grid.shape[1] != dmd_grid.shape[1]:
+                        # Resize to match height (shouldn't happen with same num_images, but just in case)
+                        target_h = min(teacher_grid.shape[1], dmd_grid.shape[1])
+                        if teacher_grid.shape[1] != target_h:
+                            teacher_grid = F.interpolate(
+                                teacher_grid.unsqueeze(0), 
+                                size=(target_h, teacher_grid.shape[2]), 
+                                mode='bilinear', 
+                                align_corners=False
+                            ).squeeze(0)
+                        if dmd_grid.shape[1] != target_h:
+                            dmd_grid = F.interpolate(
+                                dmd_grid.unsqueeze(0), 
+                                size=(target_h, dmd_grid.shape[2]), 
+                                mode='bilinear', 
+                                align_corners=False
+                            ).squeeze(0)
+                    # Concatenate horizontally (side-by-side): teacher left, DMD right
+                    comparison_grid = torch.cat([teacher_grid, dmd_grid], dim=2)  # dim=2 is width
+                    _log_wandb({"samples/comparison": wandb.Image(comparison_grid)}, step=global_step)
+                        
                 except Exception as e:
                     print(f"[wandb] sample logging failed at step {global_step}: {e}")
 

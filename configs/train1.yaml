@@ -5,7 +5,7 @@
 # output_dir and wandb.dir are relative to Hydra experiment output directory
 data_dir: ./data
 output_dir: checkpoints  # Will be created in Hydra output directory
-teacher_checkpoint: ./log/checkpoints/teacher/teacher_checkpoint_step_10000.pt
+teacher_checkpoint: ./outputs/2026-01-15/15-02-41/checkpoints/teacher_checkpoint_step_20000.pt
 resume_from_checkpoint: null
 
 # Training hyperparameters
