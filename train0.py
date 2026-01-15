@@ -56,7 +56,11 @@ def _sample_teacher_grid(
 
     # Sampling sigmas: go from large -> small
     sigmas = get_sigmas_karras(steps, sigma_min=sigma_min, sigma_max=sigma_max, rho=rho).to(device)
-    sigmas = torch.flip(sigmas, dims=[0])
+    # Filter to only include sigmas <= conditioning_sigma (already in decreasing order)
+    sigmas = sigmas[sigmas <= conditioning_sigma]
+    if len(sigmas) == 0:
+        raise ValueError(f"No sigmas <= conditioning_sigma={conditioning_sigma}. Check sigma_max >= conditioning_sigma.")
+    # sigmas are already in decreasing order (sigma_max -> sigma_min), so we iterate directly
 
     # Start from Gaussian noise at a chosen conditioning sigma (often sigma_max)
     sigma0 = float(conditioning_sigma)
