@@ -8,7 +8,7 @@ output_dir: checkpoints  # Will be created in Hydra output directory
 
 # Training hyperparameters
 batch_size: 128
-lr: 1.0e-4
+lr: 5e-4
 step_number: 400000
 max_grad_norm: 1.0
 save_every: 5000
