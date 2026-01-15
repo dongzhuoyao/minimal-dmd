@@ -37,5 +37,5 @@ wandb:
   log_samples: true
   sample_every: 1000
   sample_num_images: 64
-  sample_steps: 20
+  sample_steps: 50
   sample_conditioning_sigma: 80.0
