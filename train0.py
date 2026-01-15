@@ -11,6 +11,7 @@ from torchvision.utils import make_grid
 from tqdm import tqdm
 import os
 import hydra
+from hydra.core.hydra_config import HydraConfig
 from hydra.utils import get_original_cwd
 from omegaconf import DictConfig, OmegaConf
 try:
@@ -96,11 +97,15 @@ def train_teacher(cfg: DictConfig):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
-    # Hydra changes working directory to the experiment output directory
-    # Use relative paths that will be created in the Hydra output directory
-    output_dir = cfg.output_dir
+    # Get Hydra output directory - Hydra changes working directory to the experiment output directory
+    hydra_cfg = HydraConfig.get()
+    hydra_output_dir = hydra_cfg.runtime.output_dir
+    print(f"Hydra output directory: {hydra_output_dir}")
+    
+    # Create checkpoints directory under Hydra output directory
+    output_dir = os.path.join(hydra_output_dir, cfg.output_dir)
     os.makedirs(output_dir, exist_ok=True)
-    print(f"Output directory: {os.path.abspath(output_dir)}")
+    print(f"Checkpoints directory: {output_dir}")
 
     # Optional: Weights & Biases logging
     wandb_run = None
@@ -124,9 +129,10 @@ def train_teacher(cfg: DictConfig):
             f"[wandb] enabled: project={cfg.wandb.project} mode={cfg.wandb.mode} "
             f"run_name={cfg.wandb.run_name} entity={cfg.wandb.entity}"
         )
-        wandb_dir = cfg.wandb.dir
+        # Create wandb directory under Hydra output directory
+        wandb_dir = os.path.join(hydra_output_dir, cfg.wandb.dir)
         os.makedirs(wandb_dir, exist_ok=True)
-        print(f"W&B directory: {os.path.abspath(wandb_dir)}")
+        print(f"W&B directory: {wandb_dir}")
         wandb_run = wandb.init(
             project=cfg.wandb.project,
             entity=cfg.wandb.entity,
