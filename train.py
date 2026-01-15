@@ -55,7 +55,7 @@ def _sample_dmd2_grid(
     return grid
 
 
-def train_dmd2(cfg: DictConfig):
+def train(cfg: DictConfig):
     """Train DMD2 model"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
@@ -459,9 +459,8 @@ def train_dmd2(cfg: DictConfig):
 
 @hydra.main(version_base=None, config_path="configs", config_name="config")
 def main(cfg: DictConfig) -> None:
-    train_dmd2(cfg)
+    train(cfg)
 
 
 if __name__ == "__main__":
     main()
-

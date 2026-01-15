@@ -122,7 +122,7 @@ The DMD2 training script uses **Hydra** for configuration management. Hydra auto
 #### Basic Usage (Default Config)
 
 ```bash
-python train_dmd2.py
+python train.py
 ```
 
 This uses the default config at `configs/config.yaml`. **Note**: You must set `teacher_checkpoint` in the config file or override it via command line.
@@ -130,7 +130,7 @@ This uses the default config at `configs/config.yaml`. **Note**: You must set `t
 #### Using a Specific Config
 
 ```bash
-python train_dmd2.py --config-name=config_train1
+python train.py --config-name=config_train1
 ```
 
 This loads `configs/config_train1.yaml`. Available configs:
@@ -144,13 +144,13 @@ You can override any config value from the command line:
 
 ```bash
 # Override single values
-python train_dmd2.py --config-name=config_train1 \
+python train.py --config-name=config_train1 \
     batch_size=256 \
     generator_lr=1e-5 \
     teacher_checkpoint=./log/checkpoints/teacher/teacher_final.pt
 
 # Override nested values (wandb)
-python train_dmd2.py --config-name=config_train1 \
+python train.py --config-name=config_train1 \
     wandb.enabled=true \
     wandb.project=my-project \
     wandb.run_name=experiment1
@@ -189,7 +189,7 @@ wandb:
 Or override from command line:
 
 ```bash
-python train_dmd2.py --config-name=config_train1 \
+python train.py --config-name=config_train1 \
     wandb.enabled=true \
     wandb.run_name=dmd2-experiment \
     wandb.log_samples=true
@@ -200,7 +200,7 @@ python train_dmd2.py --config-name=config_train1 \
 If training is interrupted, you can resume from a saved checkpoint:
 
 ```bash
-python train_dmd2.py --config-name=config_train1 \
+python train.py --config-name=config_train1 \
     resume_from_checkpoint=./outputs/2026-01-15/00-34-31/checkpoints/dmd2_checkpoint_step_50000.pt
 ```
 
@@ -254,7 +254,7 @@ The hyperparameters are set to match the full DMD2 implementation:
 - `guidance.py`: Guidance model with distribution matching loss
 - `unified_model.py`: Unified wrapper for generator and guidance
 - `train0.py`: Script to train the teacher diffusion model (uses Hydra)
-- `train_dmd2.py`: Script to train the DMD2 distilled model (uses Hydra)
+- `train.py`: Script to train the DMD2 distilled model (uses Hydra)
 - `generate.py`: Script to generate images from trained model
 - `configs/`: Hydra configuration files
   - `config_teacher.yaml`: Default teacher training configuration

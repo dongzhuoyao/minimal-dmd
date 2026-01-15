@@ -34,7 +34,7 @@ Standard diffusion model training:
 3. Predict clean image: `x̂_0 = UNet(x_t, σ_t, label)`
 4. Compute loss: `L = w_t * ||x̂_0 - x_0||²` (Karras weighting)
 
-### Phase 2: DMD2 Distillation (`train_dmd2.py`)
+### Phase 2: DMD2 Distillation (`train.py`)
 
 **Generator Turn** (every `dfake_gen_update_ratio` steps):
 1. Generate image: `x_gen = feedforward_model(noise * σ_cond, σ_cond, label)`
