@@ -284,7 +284,6 @@ def train_teacher(cfg: DictConfig):
                     {
                         "train/loss": loss.item(),
                         "train/avg_loss": avg_loss,
-                        "train/batch_idx": batch_idx,
                         "train/lr": lr,
                         "train/grad_norm": float(grad_norm),
                     },

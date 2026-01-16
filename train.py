@@ -438,7 +438,6 @@ def train(cfg: DictConfig):
                 metrics = {
                     "train/loss_fake": float(guidance_loss.item()),
                     "train/avg_loss_fake": float(avg_fake),
-                    "train/batch_idx": int(batch_idx),
                     "train/guidance_lr": float(optimizer_guidance.param_groups[0]["lr"]),
                     "train/guidance_grad_norm": float(fake_grad_norm),
                 }
