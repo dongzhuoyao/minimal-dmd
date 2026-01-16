@@ -154,9 +154,14 @@ def train_teacher(cfg: DictConfig):
                 "Install it with `pip install wandb` (and ensure you're logged in with `wandb login`)."
             ) from e
 
+        # Get config name and dynamic value to construct run name
+        config_name = hydra_cfg.job.config_name
+        dynamic = cfg.dynamic.lower() if hasattr(cfg, 'dynamic') else "vesde"
+        wandb_run_name = f"{config_name}-{dynamic}"
+        
         print(
             f"[wandb] enabled: project={cfg.wandb.project} mode={cfg.wandb.mode} "
-            f"run_name={cfg.wandb.run_name} entity={cfg.wandb.entity}"
+            f"run_name={wandb_run_name} entity={cfg.wandb.entity}"
         )
         # Create wandb directory under Hydra output directory
         wandb_dir = os.path.join(hydra_output_dir, cfg.wandb.dir)
@@ -165,7 +170,7 @@ def train_teacher(cfg: DictConfig):
         wandb_run = wandb.init(
             project=cfg.wandb.project,
             entity=cfg.wandb.entity,
-            name=cfg.wandb.run_name,
+            name=wandb_run_name,
             tags=cfg.wandb.tags if cfg.wandb.tags is not None else None,
             mode=cfg.wandb.mode,
             dir=wandb_dir,
