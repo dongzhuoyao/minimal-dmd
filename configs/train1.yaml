@@ -10,8 +10,8 @@ resume_from_checkpoint: null
 
 # Training hyperparameters
 batch_size: 128
-generator_lr: 2.0e-6
-guidance_lr: 2.0e-6
+generator_lr: 2.0e-5
+guidance_lr: 2.0e-5
 step_number: 100000
 dfake_gen_update_ratio: 10
 dm_loss_weight: 1.0
