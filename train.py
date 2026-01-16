@@ -31,6 +31,7 @@ def _sample_dmd2_grid(
     num_images: int,
     conditioning_sigma: float,
     num_classes: int = 10,
+    dynamic: str = "vesde",
 ) -> torch.Tensor:
     """
     Sample images from the distilled feedforward model (single forward pass).
@@ -45,11 +46,20 @@ def _sample_dmd2_grid(
         raise ValueError("--wandb_sample_num_images must be > 0")
 
     labels = torch.arange(B, device=device, dtype=torch.long) % int(num_classes)
-    sigma = float(conditioning_sigma)
-    scaled_noise = torch.randn(B, 1, 28, 28, device=device) * sigma
-    timestep_sigma = torch.ones(B, device=device) * sigma
-
-    x0 = feedforward_model(scaled_noise, timestep_sigma, labels)
+    
+    if dynamic == "vesde":
+        sigma = float(conditioning_sigma)
+        scaled_noise = torch.randn(B, 1, 28, 28, device=device) * sigma
+        timestep_sigma = torch.ones(B, device=device) * sigma
+        x0 = feedforward_model(scaled_noise, timestep_sigma, labels)
+    elif dynamic == "fm":
+        # For flow matching, start from noise and use t=1.0
+        scaled_noise = torch.randn(B, 1, 28, 28, device=device) * conditioning_sigma
+        conditioning_time = torch.ones(B, device=device) * 1.0
+        x0 = feedforward_model(scaled_noise, conditioning_time, labels)
+    else:
+        raise ValueError(f"Unknown dynamic type: {dynamic}")
+    
     vis = (x0.detach().cpu() + 1.0) / 2.0
     vis = vis.clamp(0.0, 1.0)
     grid = make_grid(vis, nrow=min(8, B))
