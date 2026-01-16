@@ -13,16 +13,16 @@ except ImportError:
 
 class GuidanceModel(nn.Module):
     """Guidance model for DMD2 training"""
-    def __init__(self, num_train_timesteps=1000, sigma_min=0.002, sigma_max=80.0, 
+    def __init__(self, backbone, num_train_timesteps=1000, sigma_min=0.002, sigma_max=80.0, 
                  sigma_data=0.5, rho=7.0, min_step_percent=0.02, max_step_percent=0.98):
         super().__init__()
         
         # Real UNet (teacher) - frozen
-        self.real_unet = SimpleUNet(img_channels=1, label_dim=10)
+        self.real_unet = copy.deepcopy(backbone)
         self.real_unet.requires_grad_(False)
         
         # Fake UNet (student) - trainable
-        self.fake_unet = copy.deepcopy(self.real_unet)
+        self.fake_unet = copy.deepcopy(backbone)
         self.fake_unet.requires_grad_(True)
         
         # Training parameters
@@ -186,11 +186,16 @@ class UnifiedModel(nn.Module):
     """Unified model wrapping generator and guidance"""
     def __init__(self, num_train_timesteps=1000, sigma_min=0.002, sigma_max=80.0,
                  sigma_data=0.5, rho=7.0, min_step_percent=0.02, max_step_percent=0.98,
-                 conditioning_sigma=80.0):
+                 conditioning_sigma=80.0, backbone=None):
         super().__init__()
+        
+        # Create backbone model (default to SimpleUNet for backward compatibility)
+        if backbone is None:
+            backbone = SimpleUNet(img_channels=1, label_dim=10)
         
         # Guidance model (contains real_unet and fake_unet)
         self.guidance_model = GuidanceModel(
+            backbone=backbone,
             num_train_timesteps=num_train_timesteps,
             sigma_min=sigma_min,
             sigma_max=sigma_max,
