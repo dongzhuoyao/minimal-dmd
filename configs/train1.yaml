@@ -17,6 +17,7 @@ dfake_gen_update_ratio: 10
 dm_loss_weight: 1.0
 max_grad_norm: 1.0
 save_every: 5000
+dynamic: vesde # vesde, fm
 
 # Model hyperparameters
 num_train_timesteps: 1000

@@ -67,6 +67,7 @@ def _sample_teacher_grid(
     num_images: int,
     conditioning_sigma: float,
     num_classes: int = 10,
+    dynamic: str = "vesde",
 ) -> torch.Tensor:
     """
     Sample images from the teacher model using single forward pass (same as DMD for fair comparison).
@@ -85,14 +86,21 @@ def _sample_teacher_grid(
 
     # Cycle labels 0..9 to make the grid interpretable (same as DMD)
     labels = torch.arange(B, device=device, dtype=torch.long) % int(num_classes)
-    sigma = float(conditioning_sigma)
     
-    # Single-step sampling: same as DMD
-    scaled_noise = torch.randn(B, 1, 28, 28, device=device) * sigma
-    timestep_sigma = torch.ones(B, device=device) * sigma
-    
-    # Single forward pass
-    x0 = teacher_model(scaled_noise, timestep_sigma, labels)
+    if dynamic == "vesde":
+        sigma = float(conditioning_sigma)
+        # Single-step sampling: same as DMD
+        scaled_noise = torch.randn(B, 1, 28, 28, device=device) * sigma
+        timestep_sigma = torch.ones(B, device=device) * sigma
+        # Single forward pass
+        x0 = teacher_model(scaled_noise, timestep_sigma, labels)
+    elif dynamic == "fm":
+        # For flow matching, start from noise and use t=1.0
+        scaled_noise = torch.randn(B, 1, 28, 28, device=device)
+        conditioning_time = torch.ones(B, device=device) * 1.0
+        x0 = teacher_model(scaled_noise, conditioning_time, labels)
+    else:
+        raise ValueError(f"Unknown dynamic type: {dynamic}")
     
     # Map from [-1,1] to [0,1]
     vis = (x0.detach().cpu() + 1.0) / 2.0
@@ -180,6 +188,9 @@ def train(cfg: DictConfig):
         pin_memory=True
     )
     
+    # Get dynamic type
+    dynamic = cfg.dynamic.lower() if hasattr(cfg, 'dynamic') else "vesde"
+    
     # Initialize unified model
     model = UnifiedModel(
         num_train_timesteps=cfg.num_train_timesteps,
@@ -189,7 +200,8 @@ def train(cfg: DictConfig):
         rho=cfg.rho,
         min_step_percent=cfg.min_step_percent,
         max_step_percent=cfg.max_step_percent,
-        conditioning_sigma=cfg.conditioning_sigma
+        conditioning_sigma=cfg.conditioning_sigma,
+        dynamic=dynamic
     ).to(device)
 
     def _count_params(m: nn.Module) -> tuple[int, int]:
@@ -467,6 +479,7 @@ def train(cfg: DictConfig):
                         device,
                         num_images=cfg.wandb.sample_num_images,
                         conditioning_sigma=cfg.conditioning_sigma,
+                        dynamic=dynamic,
                     )
                     _log_wandb({"samples/dmd2": wandb.Image(dmd_grid)}, step=global_step)
                     
@@ -476,6 +489,7 @@ def train(cfg: DictConfig):
                         device,
                         num_images=cfg.wandb.sample_num_images,
                         conditioning_sigma=cfg.conditioning_sigma,
+                        dynamic=dynamic,
                     )
                     _log_wandb({"samples/teacher": wandb.Image(teacher_grid)}, step=global_step)
                     

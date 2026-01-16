@@ -4,6 +4,7 @@ This creates the checkpoint that will be used for DMD2 distillation
 """
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
@@ -32,13 +33,13 @@ def _sample_teacher_grid(
     sigma_max: float,
     rho: float,
     num_classes: int = 10,
+    dynamic: str = "vesde",
 ) -> torch.Tensor:
     """
-    Sample images from the teacher by iteratively "rescaling noise" using x0 predictions.
-
-    We treat the teacher as an x0-predictor:
-      x = x0 + sigma * n  =>  n_hat = (x - x0_hat) / sigma
-      x_next = x0_hat + sigma_next * n_hat
+    Sample images from the teacher model.
+    
+    For VESDE: iteratively "rescaling noise" using x0 predictions.
+    For FM: integrate ODE from t=0 to t=1 using velocity predictions.
 
     Returns a grid tensor suitable for logging (C,H,W) in [0,1].
     """
@@ -55,32 +56,60 @@ def _sample_teacher_grid(
     # Cycle labels 0..9 to make the grid interpretable
     labels = torch.arange(B, device=device, dtype=torch.long) % int(num_classes)
 
-    # Sampling sigmas: go from large -> small
-    sigmas = get_sigmas_karras(steps, sigma_min=sigma_min, sigma_max=sigma_max, rho=rho).to(device)
-    # Filter to only include sigmas <= conditioning_sigma (already in decreasing order)
-    sigmas = sigmas[sigmas <= conditioning_sigma]
-    if len(sigmas) == 0:
-        raise ValueError(f"No sigmas <= conditioning_sigma={conditioning_sigma}. Check sigma_max >= conditioning_sigma.")
-    # sigmas are already in decreasing order (sigma_max -> sigma_min), so we iterate directly
+    if dynamic == "vesde":
+        # VESDE-based sampling
+        # Sampling sigmas: go from large -> small
+        sigmas = get_sigmas_karras(steps, sigma_min=sigma_min, sigma_max=sigma_max, rho=rho).to(device)
+        # Filter to only include sigmas <= conditioning_sigma (already in decreasing order)
+        sigmas = sigmas[sigmas <= conditioning_sigma]
+        if len(sigmas) == 0:
+            raise ValueError(f"No sigmas <= conditioning_sigma={conditioning_sigma}. Check sigma_max >= conditioning_sigma.")
+        # sigmas are already in decreasing order (sigma_max -> sigma_min), so we iterate directly
 
-    # Start from Gaussian noise at a chosen conditioning sigma (often sigma_max)
-    sigma0 = float(conditioning_sigma)
-    x = torch.randn(B, 1, 28, 28, device=device) * sigma0
+        # Start from Gaussian noise at a chosen conditioning sigma (often sigma_max)
+        sigma0 = float(conditioning_sigma)
+        x = torch.randn(B, 1, 28, 28, device=device) * sigma0
 
-    # Denoise loop: move from sigma0 towards the schedule's tail.
-    # We include sigma0 explicitly as the first step, then follow the Karras schedule.
-    sigma_prev: float = sigma0
-    for sigma_next_t in sigmas:
-        sigma_next = float(sigma_next_t.item())
-        sigma_prev_t = torch.full((B,), sigma_prev, device=device)
-        x0_hat = model(x, sigma_prev_t, labels)
-        n_hat = (x - x0_hat) / max(sigma_prev, 1e-8)
-        x = x0_hat + sigma_next * n_hat
-        sigma_prev = sigma_next
+        # Denoise loop: move from sigma0 towards the schedule's tail.
+        # We include sigma0 explicitly as the first step, then follow the Karras schedule.
+        sigma_prev: float = sigma0
+        for sigma_next_t in sigmas:
+            sigma_next = float(sigma_next_t.item())
+            sigma_prev_t = torch.full((B,), sigma_prev, device=device)
+            x0_hat = model(x, sigma_prev_t, labels)
+            n_hat = (x - x0_hat) / max(sigma_prev, 1e-8)
+            x = x0_hat + sigma_next * n_hat
+            sigma_prev = sigma_next
 
-    # Final x0 prediction at the last sigma
-    sigma_last_t = torch.full((B,), sigma_prev, device=device)
-    x0 = model(x, sigma_last_t, labels)
+        # Final x0 prediction at the last sigma
+        sigma_last_t = torch.full((B,), sigma_prev, device=device)
+        x0 = model(x, sigma_last_t, labels)
+        
+    elif dynamic == "fm":
+        # Flow matching-based sampling
+        # Start from noise (x_0)
+        x = torch.randn(B, 1, 28, 28, device=device)
+        
+        # Time steps from 0 to 1
+        time_steps = torch.linspace(0.0, 1.0, steps + 1, device=device)
+        
+        # Euler integration: x_{t+dt} = x_t + dt * v_t
+        for i in range(steps):
+            t = time_steps[i]
+            dt = time_steps[i + 1] - time_steps[i]
+            
+            # Predict velocity at current time
+            t_batch = torch.full((B,), t, device=device)
+            v_pred = model(x, t_batch, labels)
+            
+            # Update x: x_{t+dt} = x_t + dt * v_t
+            x = x + dt * v_pred
+        
+        # Final result
+        x0 = x
+        
+    else:
+        raise ValueError(f"Unknown dynamic type: {dynamic}")
 
     # Map from [-1,1] to [0,1]
     vis = (x0.detach().cpu() + 1.0) / 2.0
@@ -194,14 +223,24 @@ def train_teacher(cfg: DictConfig):
     # Optimizer
     optimizer = optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=0.01)
     
-    # Karras noise schedule
-    sigmas = get_sigmas_karras(cfg.num_train_timesteps, 
-                               sigma_min=cfg.sigma_min,
-                               sigma_max=cfg.sigma_max,
-                               rho=cfg.rho)
-    sigmas = sigmas.to(device)
+    # Get dynamic type
+    dynamic = cfg.dynamic.lower() if hasattr(cfg, 'dynamic') else "vesde"
     
-    sigma_data = cfg.sigma_data
+    if dynamic == "vesde":
+        # Karras noise schedule for VESDE
+        sigmas = get_sigmas_karras(cfg.num_train_timesteps, 
+                                   sigma_min=cfg.sigma_min,
+                                   sigma_max=cfg.sigma_max,
+                                   rho=cfg.rho)
+        sigmas = sigmas.to(device)
+        sigma_data = cfg.sigma_data
+    elif dynamic == "fm":
+        # Flow matching uses time t in [0, 1]
+        times = torch.linspace(0.0, 1.0, cfg.num_train_timesteps, device=device)
+        sigmas = None  # Not used for FM
+        sigma_data = None  # Not used for FM
+    else:
+        raise ValueError(f"Unknown dynamic type: {dynamic}. Must be 'vesde' or 'fm'")
     
     # Training loop
     model.train()
@@ -246,23 +285,47 @@ def train_teacher(cfg: DictConfig):
                 device=device,
                 dtype=torch.long
             )
-            timestep_sigma = sigmas[timesteps]
             
-            # Add noise
-            noise = torch.randn_like(images)
-            noisy_images = images + timestep_sigma.reshape(-1, 1, 1, 1) * noise
-            
-            # Predict x0
-            pred_x0 = model(noisy_images, timestep_sigma, labels)
-            
-            # Karras loss weighting
-            snrs = timestep_sigma ** -2
-            weights = snrs + 1.0 / (sigma_data ** 2)
-            
-            # Compute loss
-            loss = torch.mean(
-                weights.reshape(-1, 1, 1, 1) * (pred_x0 - images) ** 2
-            )
+            if dynamic == "vesde":
+                timestep_sigma = sigmas[timesteps]
+                
+                # Add noise
+                noise = torch.randn_like(images)
+                noisy_images = images + timestep_sigma.reshape(-1, 1, 1, 1) * noise
+                
+                # Predict x0
+                pred_x0 = model(noisy_images, timestep_sigma, labels)
+                
+                # Karras loss weighting
+                snrs = timestep_sigma ** -2
+                weights = snrs + 1.0 / (sigma_data ** 2)
+                
+                # Compute loss
+                loss = torch.mean(
+                    weights.reshape(-1, 1, 1, 1) * (pred_x0 - images) ** 2
+                )
+            elif dynamic == "fm":
+                # Flow matching training
+                t = times[timesteps]  # [B] time values in [0, 1]
+                
+                # Sample noise (x_0)
+                noise = torch.randn_like(images)
+                
+                # Interpolate: x_t = (1 - t) * x_0 + t * x_1
+                # where x_0 is noise and x_1 is the clean image
+                t_expanded = t.view(-1, 1, 1, 1)
+                x_t = (1 - t_expanded) * noise + t_expanded * images
+                
+                # True velocity: v_t = x_1 - x_0 = images - noise
+                v_true = images - noise
+                
+                # Predict velocity
+                pred_velocity = model(x_t, t, labels)
+                
+                # Flow matching loss: MSE between predicted and true velocity
+                loss = F.mse_loss(pred_velocity, v_true, reduction="mean")
+            else:
+                raise ValueError(f"Unknown dynamic type: {dynamic}")
             
             # Backward pass
             optimizer.zero_grad()
@@ -306,6 +369,7 @@ def train_teacher(cfg: DictConfig):
                         sigma_min=cfg.sigma_min,
                         sigma_max=cfg.sigma_max,
                         rho=cfg.rho,
+                        dynamic=dynamic,
                     )
                     import wandb  # type: ignore
                     _log_wandb({"samples/teacher": wandb.Image(grid)}, step=global_step)

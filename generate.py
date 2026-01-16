@@ -33,21 +33,33 @@ def generate_images(args):
     # MNIST class names (digits 0-9)
     class_names = [str(i) for i in range(10)]
     
+    # Get dynamic type
+    dynamic = args.dynamic.lower()
+    
     # Generate images
     with torch.no_grad():
         for class_idx in range(10):
             print(f"Generating images for class: {class_names[class_idx]}")
             
-            # Create noise
-            noise = torch.randn(args.num_samples, 1, 28, 28, device=device)
-            scaled_noise = noise * args.conditioning_sigma
-            
             # Create labels
             labels = torch.full((args.num_samples,), class_idx, device=device, dtype=torch.long)
-            timestep_sigma = torch.ones(args.num_samples, device=device) * args.conditioning_sigma
             
-            # Generate images
-            generated_images = model(scaled_noise, timestep_sigma, labels)
+            if dynamic == "vesde":
+                # VESDE-based generation
+                noise = torch.randn(args.num_samples, 1, 28, 28, device=device)
+                scaled_noise = noise * args.conditioning_sigma
+                timestep_sigma = torch.ones(args.num_samples, device=device) * args.conditioning_sigma
+                # Generate images
+                generated_images = model(scaled_noise, timestep_sigma, labels)
+            elif dynamic == "fm":
+                # Flow matching-based generation
+                noise = torch.randn(args.num_samples, 1, 28, 28, device=device)
+                scaled_noise = noise * args.conditioning_sigma  # Scale noise for consistency
+                conditioning_time = torch.ones(args.num_samples, device=device) * 1.0
+                # Generate images (model predicts at t=1.0)
+                generated_images = model(scaled_noise, conditioning_time, labels)
+            else:
+                raise ValueError(f"Unknown dynamic type: {dynamic}")
             
             # Denormalize from [-1, 1] to [0, 1]
             generated_images = (generated_images * 0.5 + 0.5).clamp(0, 1)
@@ -73,7 +85,8 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint", type=str, required=True, help="Path to DMD2 checkpoint")
     parser.add_argument("--output_dir", type=str, default="./generated", help="Output directory for generated images")
     parser.add_argument("--num_samples", type=int, default=16, help="Number of samples per class")
-    parser.add_argument("--conditioning_sigma", type=float, default=80.0, help="Conditioning sigma for generation")
+    parser.add_argument("--conditioning_sigma", type=float, default=80.0, help="Conditioning sigma for generation (VESDE) or noise scale (FM)")
+    parser.add_argument("--dynamic", type=str, default="vesde", choices=["vesde", "fm"], help="Dynamic type: vesde or fm")
     
     args = parser.parse_args()
     generate_images(args)
