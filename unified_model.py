@@ -11,6 +11,41 @@ except ImportError:
     from model import SimpleUNet, get_sigmas_karras
 
 
+def compute_density_for_timestep_sampling(
+    weighting_scheme='logit_normal',
+    batch_size=1,
+    logit_mean=0.0,
+    logit_std=1.0,
+    mode_scale=1.29,
+    device='cpu'
+):
+    """
+    Sample timestep values u in [0, 1] using logit-normal distribution.
+    
+    This is used for flow matching to sample timesteps with non-uniform distribution,
+    which helps with convergence on large-scale models.
+    
+    Args:
+        weighting_scheme: 'logit_normal' for logit-normal sampling
+        batch_size: number of samples
+        logit_mean: mean of the underlying normal distribution
+        logit_std: standard deviation of the underlying normal distribution
+        mode_scale: only used for 'mode' scheme
+        device: device to place samples on
+        
+    Returns:
+        u: [batch_size] tensor of values in [0, 1]
+    """
+    if weighting_scheme == 'logit_normal':
+        # Sample from normal distribution
+        normal_samples = torch.randn(batch_size, device=device) * logit_std + logit_mean
+        # Apply sigmoid to map to (0, 1)
+        u = torch.sigmoid(normal_samples)
+        return u
+    else:
+        raise ValueError(f"Unknown weighting_scheme: {weighting_scheme}")
+
+
 class GuidanceModel(nn.Module):
     """Guidance model for DMD2 training"""
     def __init__(self, backbone, num_train_timesteps=1000, sigma_min=0.002, sigma_max=80.0, 
@@ -113,36 +148,48 @@ class GuidanceModel(nn.Module):
         elif self.dynamic == "fm":
             # Flow matching-based distribution matching
             with torch.no_grad():
-                # Sample random time t in [0, 1]
-                timesteps = torch.randint(
-                    self.min_step,
-                    min(self.max_step + 1, self.num_train_timesteps),
-                    [batch_size],
-                    device=latents.device,
-                    dtype=torch.long
+                # Difference 2: Logit-normal timestep sampling instead of uniform
+                # Sample u from logit-normal distribution in [0, 1]
+                u = compute_density_for_timestep_sampling(
+                    weighting_scheme='logit_normal',
+                    batch_size=batch_size,
+                    logit_mean=0.0,
+                    logit_std=1.0,
+                    device=latents.device
                 )
-                t = self.times[timesteps]  # [B] time values in [0, 1]
+                # Convert u to timestep indices
+                indices = (u * self.num_train_timesteps).long()
+                indices = torch.clamp(indices, self.min_step, min(self.max_step, self.num_train_timesteps - 1))
+                timesteps = indices
+                t = u  # Use u directly as time value in [0, 1]
                 
                 # Sample noise (x_0 in flow matching)
                 noise = torch.randn_like(latents)
                 
-                # Interpolate: x_t = (1 - t) * x_0 + t * x_1
-                # where x_0 is noise and x_1 is the clean image
+                # Difference 1: Flow matching interpolation
+                # x_t = (1 - t) * x_clean + t * x_noise
+                # where x_clean is latents (clean image) and x_noise is noise
+                # When t=0: x_t = x_clean, when t=1: x_t = x_noise
                 t_expanded = t.view(-1, 1, 1, 1)
-                x_t = (1 - t_expanded) * noise + t_expanded * latents
+                x_t = (1.0 - t_expanded) * latents + t_expanded * noise
                 
-                # True velocity: v_t = x_1 - x_0 = latents - noise
-                v_true = latents - noise
-                
-                # Predictions from both models (predict velocity)
-                # Note: For FM, model should predict velocity field
-                # We'll use the same interface but interpret output as velocity
+                # Model predicts velocity field (vector field) directly
                 pred_real_velocity = self.real_unet(x_t, t, labels)
                 pred_fake_velocity = self.fake_unet(x_t, t, labels)
                 
-                # Compute gradient direction (difference in velocity predictions)
-                p_real = v_true - pred_real_velocity
-                p_fake = v_true - pred_fake_velocity
+                # Convert velocity field to x0 (clean image) estimation
+                # From flow matching: x_t = (1-t) * x_clean + t * x_noise
+                # And: v_t = x_clean - x_noise
+                # Solving: x_clean = x_t + t * v_t
+                pred_real_image = x_t + t_expanded * pred_real_velocity
+                pred_fake_image = x_t + t_expanded * pred_fake_velocity
+                
+                # Now apply DMD on the x0 estimations (like SenseFlow)
+                # Compute gradient direction (difference in x0 predictions)
+                # p_real = latents - pred_real_image (error from real model)
+                # p_fake = latents - pred_fake_image (error from fake model)
+                p_real = latents - pred_real_image
+                p_fake = latents - pred_fake_image
                 
                 # Weight factor for normalization
                 weight_factor = torch.abs(p_real).mean(dim=[1, 2, 3], keepdim=True)
@@ -155,8 +202,8 @@ class GuidanceModel(nn.Module):
             loss_dict = {"loss_dm": loss}
             log_dict = {
                 "dmtrain_x_t": x_t.detach(),
-                "dmtrain_pred_real_velocity": pred_real_velocity.detach(),
-                "dmtrain_pred_fake_velocity": pred_fake_velocity.detach(),
+                "dmtrain_pred_real_image": pred_real_image.detach(),
+                "dmtrain_pred_fake_image": pred_fake_image.detach(),
                 "dmtrain_grad": grad.detach(),
                 "dmtrain_gradient_norm": torch.norm(grad).item(),
                 "dmtrain_timesteps": timesteps.detach(),
@@ -218,25 +265,31 @@ class GuidanceModel(nn.Module):
             
         elif self.dynamic == "fm":
             # Flow matching-based fake loss
-            # Sample random time t in [0, 1]
-            timesteps = torch.randint(
-                0,
-                self.num_train_timesteps,
-                [batch_size],
-                device=latents.device,
-                dtype=torch.long
+            # Difference 2: Logit-normal timestep sampling instead of uniform
+            u = compute_density_for_timestep_sampling(
+                weighting_scheme='logit_normal',
+                batch_size=batch_size,
+                logit_mean=0.0,
+                logit_std=1.0,
+                device=latents.device
             )
-            t = self.times[timesteps]  # [B] time values in [0, 1]
+            # Convert u to timestep indices
+            indices = (u * self.num_train_timesteps).long()
+            indices = torch.clamp(indices, 0, self.num_train_timesteps - 1)
+            timesteps = indices
+            t = u  # Use u directly as time value in [0, 1]
             
-            # Interpolate: x_t = (1 - t) * x_0 + t * x_1
-            # where x_0 is noise and x_1 is the fake image
+            # Difference 1: Flow matching interpolation
+            # x_t = (1 - t) * x_clean + t * x_noise
+            # where x_clean is latents (fake image) and x_noise is noise
+            # When t=0: x_t = x_clean, when t=1: x_t = x_noise
             t_expanded = t.view(-1, 1, 1, 1)
-            x_t = (1 - t_expanded) * noise + t_expanded * latents
+            x_t = (1.0 - t_expanded) * latents + t_expanded * noise
             
-            # True velocity: v_t = x_1 - x_0 = latents - noise
+            # True velocity field: v_t = x_1 - x_0 = latents - noise
             v_true = latents - noise
             
-            # Predict velocity
+            # Model predicts velocity field (vector field) directly
             pred_velocity = self.fake_unet(x_t, t, labels)
             
             # Flow matching loss: MSE between predicted and true velocity
