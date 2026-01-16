@@ -450,14 +450,15 @@ def train(cfg: DictConfig):
                 metrics = {
                     "train/loss_fake": float(guidance_loss.item()),
                     "train/avg_loss_fake": float(avg_fake),
+                    "train/avg_loss_dm": float(avg_dm),  # Always log running average
                     "train/guidance_lr": float(optimizer_guidance.param_groups[0]["lr"]),
                     "train/guidance_grad_norm": float(fake_grad_norm),
                 }
+                # Log current loss_dm and generator metrics only when computed
                 if COMPUTE_GENERATOR_GRADIENT and generator_loss is not None:
                     metrics.update(
                         {
                             "train/loss_dm": float(generator_loss.item()),
-                            "train/avg_loss_dm": float(avg_dm),
                             "train/generator_lr": float(optimizer_generator.param_groups[0]["lr"]),
                             "train/generator_grad_norm": float(gen_grad_norm) if gen_grad_norm is not None else 0.0,
                         }
