@@ -343,7 +343,7 @@ def train(cfg: DictConfig):
             except StopIteration:
                 data_iter = iter(train_loader)
                 images, labels = next(data_iter)
-            batch_idx = global_step % len(train_loader)
+            
             
             images = images.to(device)
             labels = labels.to(device)
