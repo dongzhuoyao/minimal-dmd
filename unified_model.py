@@ -150,6 +150,8 @@ class GuidanceModel(nn.Module):
             with torch.no_grad():
                 # Difference 2: Logit-normal timestep sampling instead of uniform
                 # Sample u from logit-normal distribution in [0, 1]
+                # For flow matching, we use the full range [0, 1] without clamping
+                # (unlike VESDE which restricts to [min_step, max_step] to avoid very noisy/clean timesteps)
                 u = compute_density_for_timestep_sampling(
                     weighting_scheme='logit_normal',
                     batch_size=batch_size,
@@ -157,11 +159,15 @@ class GuidanceModel(nn.Module):
                     logit_std=1.0,
                     device=latents.device
                 )
-                # Convert u to timestep indices
+                # Clamp u to [0, 1] to ensure valid range (logit-normal should already be in this range)
+                u = torch.clamp(u, 0.0, 1.0)
+                # Convert u to timestep indices for logging (not used in model forward)
+                # Match original implementation: (u * num_train_timesteps).long()
                 indices = (u * self.num_train_timesteps).long()
-                indices = torch.clamp(indices, self.min_step, min(self.max_step, self.num_train_timesteps - 1))
+                # Clamp indices to valid range [0, num_train_timesteps - 1] to avoid out-of-bounds
+                indices = torch.clamp(indices, 0, self.num_train_timesteps - 1)
                 timesteps = indices
-                t = u  # Use u directly as time value in [0, 1]
+                t = u  # Use u directly as time value in [0, 1] - this is what the model sees
                 
                 # Sample noise (x_0 in flow matching)
                 noise = torch.randn_like(latents)
@@ -266,6 +272,7 @@ class GuidanceModel(nn.Module):
         elif self.dynamic == "fm":
             # Flow matching-based fake loss
             # Difference 2: Logit-normal timestep sampling instead of uniform
+            # For flow matching, we use the full range [0, 1] without clamping
             u = compute_density_for_timestep_sampling(
                 weighting_scheme='logit_normal',
                 batch_size=batch_size,
@@ -273,11 +280,15 @@ class GuidanceModel(nn.Module):
                 logit_std=1.0,
                 device=latents.device
             )
-            # Convert u to timestep indices
+            # Clamp u to [0, 1] to ensure valid range (logit-normal should already be in this range)
+            u = torch.clamp(u, 0.0, 1.0)
+            # Convert u to timestep indices for logging (not used in model forward)
+            # Match original implementation: (u * num_train_timesteps).long()
             indices = (u * self.num_train_timesteps).long()
+            # Clamp indices to valid range [0, num_train_timesteps - 1] to avoid out-of-bounds
             indices = torch.clamp(indices, 0, self.num_train_timesteps - 1)
             timesteps = indices
-            t = u  # Use u directly as time value in [0, 1]
+            t = u  # Use u directly as time value in [0, 1] - this is what the model sees
             
             # Difference 1: Flow matching interpolation
             # x_t = (1 - t) * x_clean + t * x_noise
